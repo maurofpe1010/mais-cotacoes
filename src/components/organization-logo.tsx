@@ -14,6 +14,5 @@ export function OrganizationLogo() {
       setLogoUrl(data?.logo_url ?? null);
     })();
   }, []);
-  if (!logoUrl) return null;
-  return <img data-org-logo src={logoUrl} alt="Logo da corretora" style={{ display: "block", width: "100%", maxHeight: 72, objectFit: "contain", objectPosition: "center", marginBottom: 14, background: "white", borderRadius: 8, padding: 7 }} />;
+  return <img data-org-logo src={logoUrl ?? "/mais-corretora-logo.png"} alt="Mais Corretora" style={{ display: "block", width: "100%", maxHeight: 72, objectFit: "contain", objectPosition: "center", marginBottom: 14, background: "white", borderRadius: 8, padding: 7 }} />;
 }
