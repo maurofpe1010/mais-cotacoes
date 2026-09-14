@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase";
 
 type Lead = { id: string; title: string; lead_kind: string; stage: string; created_at: string; primary_contact: { full_name: string } | null };
+type LeadQueryRow = Omit<Lead, "primary_contact"> & { primary_contact: { full_name: string }[] | null };
 type FollowUp = { id: string; title: string; due_at: string };
 type Overview = { open: number; quoting: number; proposals: number; conversion: number };
 const modeLabel: Record<string, string> = { individual: "Individual", adhesion: "Adesão", corporate: "Empresarial" };
@@ -26,7 +27,10 @@ function Dashboard() {
       client.from("proposals").select("id,status"),
       client.from("crm_follow_ups").select("id,title,due_at").eq("status", "open").order("due_at").limit(5),
     ]);
-    const allLeads = (leadResult.data ?? []) as Lead[];
+    const allLeads = ((leadResult.data ?? []) as unknown as LeadQueryRow[]).map((lead) => ({
+      ...lead,
+      primary_contact: lead.primary_contact?.[0] ?? null,
+    }));
     const active = allLeads.filter((lead) => !["won", "lost", "archived"].includes(lead.stage));
     const closed = allLeads.filter((lead) => ["won", "lost"].includes(lead.stage));
     setOverview({ open: active.length, quoting: allLeads.filter((lead) => lead.stage === "quoting").length, proposals: (proposalResult.data ?? []).filter((proposal) => ["sent", "viewed"].includes(proposal.status)).length, conversion: closed.length ? Math.round(allLeads.filter((lead) => lead.stage === "won").length / closed.length * 100) : 0 });

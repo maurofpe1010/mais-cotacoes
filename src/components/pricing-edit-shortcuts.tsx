@@ -6,12 +6,13 @@ import { usePathname } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase";
 
 type Item = { id: string; title: string; effective_from: string; plan: { name: string } | null };
+type ItemQueryRow = Omit<Item, "plan"> & { plan: { name: string }[] | null };
 
 export function PricingEditShortcuts() {
   const path = usePathname(); const [items, setItems] = useState<Item[]>([]);
   async function loadItems() {
     const { data } = await supabaseBrowser().from("pricing_tables").select("id,title,effective_from,plan:insurer_plans!pricing_tables_plan_id_fkey(name)").is("archived_at", null).order("effective_from", { ascending: false });
-    setItems((data ?? []) as Item[]);
+    setItems(((data ?? []) as unknown as ItemQueryRow[]).map((item) => ({ ...item, plan: item.plan?.[0] ?? null })));
   }
   useEffect(() => { if (path === "/dashboard/pricing") void loadItems(); }, [path]);
   async function archiveTable(item: Item) {

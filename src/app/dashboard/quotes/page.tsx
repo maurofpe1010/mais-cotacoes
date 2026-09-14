@@ -5,6 +5,8 @@ import { supabaseBrowser } from "@/lib/supabase";
 
 type CrmLead = { id: string; title: string; lead_kind: "individual" | "adhesion" | "corporate"; stage: string; primary_contact: { full_name: string } | null };
 type Quote = { id: string; quote_number: number; title: string; contracting_mode: string; status: string; created_at: string; lead: { title: string } | null };
+type CrmLeadQueryRow = Omit<CrmLead, "primary_contact"> & { primary_contact: { full_name: string }[] | null };
+type QuoteQueryRow = Omit<Quote, "lead"> & { lead: { title: string }[] | null };
 const labels = { individual: "Individual", adhesion: "Adesão", corporate: "Empresarial" };
 function quoteCode(quote: Quote) { const date = new Date(quote.created_at); return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(quote.quote_number).padStart(3, "0")}`; }
 
@@ -30,7 +32,9 @@ export default function QuotesPage() {
       client.from("quotes").select("id,quote_number,title,contracting_mode,status,created_at,lead:crm_leads!quotes_lead_id_fkey(title)").is("archived_at", null).order("created_at", { ascending: false }),
     ]);
     if (leadsError || quotesError) { setError(leadsError?.message ?? quotesError?.message ?? "Não foi possível carregar os dados."); return; }
-    setLeads((leadRows ?? []) as CrmLead[]); setQuotes((quoteRows ?? []) as Quote[]);
+    const normalizedLeads = ((leadRows ?? []) as unknown as CrmLeadQueryRow[]).map((lead) => ({ ...lead, primary_contact: lead.primary_contact?.[0] ?? null }));
+    const normalizedQuotes = ((quoteRows ?? []) as unknown as QuoteQueryRow[]).map((quote) => ({ ...quote, lead: quote.lead?.[0] ?? null }));
+    setLeads(normalizedLeads); setQuotes(normalizedQuotes);
   }
   useEffect(() => { void loadData(); }, []);
 

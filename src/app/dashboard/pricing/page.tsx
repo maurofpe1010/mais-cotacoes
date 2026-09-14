@@ -3,8 +3,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase";
 
-type Plan = { id: string; insurer_id: string; name: string; insurer: { legal_name: string; trade_name: string | null } | null };
-type PriceTable = { id: string; title: string; contracting_mode: string; effective_from: string; effective_to: string | null; has_ward: boolean; has_apartment: boolean; insurer: { trade_name: string | null; legal_name: string } | null; plan: { name: string } | null };
+type Plan = { id: string; insurer_id: string; name: string; insurer: any };
+type PriceTable = { id: string; title: string; contracting_mode: string; effective_from: string; effective_to: string | null; has_ward: boolean; has_apartment: boolean; insurer: any; plan: any };
 type Band = { label: string; ageFrom: number; ageTo: number; active: boolean; ward: string; apartment: string };
 const standardBands = (): Band[] => [["0 a 18 anos",0,18],["19 a 23 anos",19,23],["24 a 28 anos",24,28],["29 a 33 anos",29,33],["34 a 38 anos",34,38],["39 a 43 anos",39,43],["44 a 48 anos",44,48],["49 a 53 anos",49,53],["54 a 58 anos",54,58],["59 anos ou mais",59,120]].map(([label, ageFrom, ageTo]) => ({ label: label as string, ageFrom: ageFrom as number, ageTo: ageTo as number, active: true, ward: "", apartment: "" }));
 const modes = { individual: "Individual", adhesion: "Adesão", corporate: "Empresarial" };

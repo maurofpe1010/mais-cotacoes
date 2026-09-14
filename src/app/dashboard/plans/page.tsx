@@ -5,6 +5,10 @@ import { supabaseBrowser } from "@/lib/supabase";
 
 type Insurer = { id: string; legal_name: string; trade_name: string | null; registration_number: string | null; logo_url: string | null; created_at: string };
 type Plan = { id: string; insurer_id: string; product_id: string; name: string; plan_code: string | null; accommodation: string; copay_description: string | null; logo_url: string | null; insurer: { legal_name: string; trade_name: string | null } | null; product: { name: string } | null };
+type PlanQueryRow = Omit<Plan, "insurer" | "product"> & {
+  insurer: NonNullable<Plan["insurer"]>[] | null;
+  product: NonNullable<Plan["product"]>[] | null;
+};
 const acceptedImages = ["image/png", "image/jpeg", "image/webp"];
 const accommodations = [{ value: "apartment", label: "Apartamento" }, { value: "ward", label: "Enfermaria" }, { value: "not_applicable", label: "Não se aplica" }];
 
@@ -31,7 +35,12 @@ export default function PlansPage() {
       client.from("insurer_plans").select("id,insurer_id,product_id,name,plan_code,accommodation,copay_description,logo_url,insurer:insurers!insurer_plans_insurer_id_fkey(legal_name,trade_name),product:insurer_products!insurer_plans_product_id_fkey(name)").is("archived_at", null).order("name"),
     ]);
     if (insurersError || plansError) { setError(insurersError?.message ?? plansError?.message ?? "Não foi possível carregar o catálogo."); return; }
-    setInsurers((insurerRows ?? []) as Insurer[]); setPlans((planRows ?? []) as Plan[]);
+    const normalizedPlans = ((planRows ?? []) as unknown as PlanQueryRow[]).map((plan) => ({
+      ...plan,
+      insurer: plan.insurer?.[0] ?? null,
+      product: plan.product?.[0] ?? null,
+    }));
+    setInsurers((insurerRows ?? []) as Insurer[]); setPlans(normalizedPlans);
   }
   useEffect(() => { void loadData(); }, []);
   useEffect(() => {
