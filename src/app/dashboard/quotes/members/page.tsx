@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase";
+import { cleanQuoteTitle } from "@/lib/quote-title";
 
 type Quote = { id: string; quote_number: number; title: string; created_at: string };
 type Member = { id: string; full_name_snapshot: string | null; birth_date: string; member_role: string };
@@ -64,7 +65,7 @@ export default function QuoteMembersPage() {
   return <>
     <div className="eyebrow">Cotações</div><h1>2. Informe as idades</h1>
     <section className="panel" style={{ maxWidth: 760 }}>
-      <label className="field">Cotação<select value={quoteId} onChange={(event) => { setQuoteId(event.target.value); setMembers([]); }}><option value="">Selecione</option>{quotes.map((quote) => <option key={quote.id} value={quote.id}>Cotação {quoteCode(quote)} — {quote.title}</option>)}</select></label>
+      <label className="field">Cotação<select value={quoteId} onChange={(event) => { setQuoteId(event.target.value); setMembers([]); }}><option value="">Selecione</option>{quotes.map((quote) => <option key={quote.id} value={quote.id}>Cotação {quoteCode(quote)} — {cleanQuoteTitle(quote.title)}</option>)}</select></label>
       {quoteId && <form onSubmit={saveMember}>
         <p style={{ color: "#64748b", fontSize: 13 }}>{editingMember ? "Altere os dados necessários e salve." : "O nome é opcional. Informe somente a idade ou a data de nascimento de cada vida."}</p>
         <label className="field">Nome <span style={{ fontWeight: 400, color: "#64748b" }}>(opcional)</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
