@@ -5,6 +5,7 @@ import { supabaseBrowser } from "@/lib/supabase";
 
 type Contact = { id: string; full_name: string; email: string | null; phone: string | null };
 type Lead = { id: string; title: string; lead_kind: string; stage: string; created_at: string; primary_contact: Contact | null };
+type LeadQueryRow = Omit<Lead, "primary_contact"> & { primary_contact: Contact[] | null };
 const modes = [{ value: "individual", label: "Individual" }, { value: "adhesion", label: "Adesão" }, { value: "corporate", label: "Empresarial" }];
 
 export default function CrmPage() {
@@ -29,7 +30,11 @@ export default function CrmPage() {
       .select("id,title,lead_kind,stage,created_at,primary_contact:crm_contacts!crm_leads_primary_contact_id_fkey(id,full_name,email,phone)")
       .is("archived_at", null).order("created_at", { ascending: false });
     if (queryError) { setError(queryError.message); return; }
-    setLeads((data ?? []) as Lead[]);
+    const normalizedLeads = ((data ?? []) as unknown as LeadQueryRow[]).map((lead) => ({
+      ...lead,
+      primary_contact: lead.primary_contact?.[0] ?? null,
+    }));
+    setLeads(normalizedLeads);
   }
 
   useEffect(() => { void loadLeads(); }, []);
