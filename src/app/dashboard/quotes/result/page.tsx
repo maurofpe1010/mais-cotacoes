@@ -8,6 +8,7 @@ type Plan = {
   id: string;
   name: string;
   accommodation: string | null;
+  copay_description: string | null;
   logo_url: string | null;
   main_hospitals: string | null;
   insurer: { trade_name: string | null; legal_name: string | null; logo_url: string | null } | null;
@@ -41,6 +42,13 @@ function quoteCode(quote: Quote) {
   return `${yearMonth}${String(quote.quote_number ?? 0).padStart(3, "0")}`;
 }
 function escapeHtml(value: string) { return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character] ?? character); }
+function copayLabel(value: string | null) {
+  const text = value?.trim();
+  if (!text || /sem\s+coparticipa/i.test(text)) return "Sem coparticipação";
+  if (/total/i.test(text)) return "Coparticipação total";
+  return "Coparticipação parcial";
+}
+const modeLabel: Record<string, string> = { individual: "Individual", adhesion: "Adesão", corporate: "Empresarial" };
 
 const currency = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -66,7 +74,7 @@ export default function QuoteResultPage() {
           .order("created_at", { ascending: false }),
         supabase
           .from("insurer_plans")
-          .select("id, name, accommodation, logo_url, main_hospitals, insurer:insurers(trade_name, legal_name, logo_url)")
+          .select("id, name, accommodation, copay_description, logo_url, main_hospitals, insurer:insurers(trade_name, legal_name, logo_url)")
           .eq("active", true)
           .order("name"),
       ]);
@@ -144,6 +152,34 @@ export default function QuoteResultPage() {
     printWindow.document.close();
     printWindow.focus();
     window.setTimeout(() => printWindow.print(), 350);
+  }
+
+  async function generatePdfLandscape() {
+    const resultSection = document.getElementById("quote-results");
+    const table = resultSection?.querySelector(".desktop-quote-table");
+    const quote = quotes.find((item) => item.id === quoteId);
+    if (!table || !quote) return;
+    const client = supabaseBrowser();
+    const [{ data: membership }, { data: quoteData }] = await Promise.all([
+      client.from("organization_members").select("organization_id").limit(1).single(),
+      client.from("quotes").select("contracting_mode,lead:crm_leads(primary_contact:crm_contacts(full_name,phone))").eq("id", quoteId).single(),
+    ]);
+    const { data: organization } = membership ? await client.from("organizations").select("logo_url,pdf_contact_name,whatsapp").eq("id", membership.organization_id).single() : { data: null };
+    const lead = (quoteData as unknown as { lead?: { primary_contact?: { full_name?: string; phone?: string }[] }[] })?.lead?.[0];
+    const contactData = lead?.primary_contact?.[0];
+    const clientName = contactData?.full_name || quote.title || "Cliente não informado";
+    const customerWhatsApp = contactData?.phone || "Não informado";
+    const ages = results.map((row) => `${row.label}: ${row.lives} vida(s)`).join(" · ");
+    const copays = visiblePlans.map(({ plan }) => `${escapeHtml(plan.name)}: ${escapeHtml(copayLabel(plan.copay_description))}`).join(" &nbsp; | &nbsp; ");
+    const logoUrl = organization?.logo_url || document.querySelector("[data-org-logo]")?.getAttribute("src");
+    const logo = logoUrl ? `<img class="broker-logo" src="${logoUrl}" alt="Logo" />` : "";
+    const contact = [organization?.pdf_contact_name, organization?.whatsapp].filter(Boolean).map((item) => escapeHtml(item!)).join(" | ");
+    const hospitals = visiblePlans.filter(({ plan }) => plan.main_hospitals?.trim()).map(({ plan }) => `<article class="network-plan">${plan.logo_url || plan.insurer?.logo_url ? `<img class="plan-logo" src="${plan.logo_url || plan.insurer?.logo_url}" alt="${escapeHtml(plan.name)}" />` : ""}<h3>${escapeHtml(plan.insurer?.trade_name || plan.insurer?.legal_name || "Operadora")} — ${escapeHtml(plan.name)}</h3><p>${escapeHtml(plan.main_hospitals ?? "").replace(/\n/g, "<br />")}</p></article>`).join("");
+    const hospitalsPage = hospitals ? `<section class="network-page"><h2>Principais hospitais credenciados</h2>${hospitals}</section>` : "";
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) { setMessage("Não foi possível abrir a impressão. Permita pop-ups para gerar o PDF."); return; }
+    printWindow.document.write(`<!doctype html><html lang="pt-BR"><head><title>Cotação ${quoteCode(quote)}</title><style>@page{size:A4 landscape;margin:10mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#17212f;margin:0;font-size:9px}.pdf-header{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;border-bottom:2px solid #1769c2;padding-bottom:8px;margin-bottom:10px}.broker-logo{max-width:105px;max-height:42px;object-fit:contain}.customer h1{font-size:16px;margin:0 0 5px}.customer p{margin:2px 0;color:#405366}.quote-details{font-size:8px;line-height:1.45;text-align:right;max-width:46%}.pdf-copay{margin:0 0 6px;padding:5px;background:#f8fbff;border:1px solid #dce4e8;font-size:8px}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:7px}th,td{padding:4px 3px;border:1px solid #d7e0e7;word-break:break-word}th{background:#edf4ff}.plan-logo{width:42px!important;height:22px!important;object-fit:contain!important;display:block;margin:0 auto}.mobile-quote-cards,.mobile-quote-cards + div,button{display:none!important}.disclaimer{margin:10px 0 0;padding-top:7px;border-top:1px solid #dce4e8;font-size:8px;line-height:1.35;color:#425466}.pdf-contact{margin-top:6px;font-size:8px;color:#334155}.network-page{page-break-before:always}.network-page h2{font-size:18px;margin:0 0 14px}.network-plan{border:1px solid #dce4e8;border-radius:7px;padding:10px;margin:9px 0;page-break-inside:avoid}.network-plan h3{font-size:12px;margin:5px 0}.network-plan p{font-size:10px;line-height:1.45;margin:0;color:#405366}</style></head><body><header class="pdf-header">${logo}<div class="customer"><h1>${escapeHtml(clientName)}</h1><p>WhatsApp: ${escapeHtml(customerWhatsApp)}</p></div><div class="quote-details"><b>Cotação ${quoteCode(quote)}</b><br />Modalidade: ${escapeHtml(modeLabel[quoteData?.contracting_mode ?? ""] ?? quoteData?.contracting_mode ?? "Não informada")}<br />Idades/faixas informadas: ${escapeHtml(ages)}</div></header><p class="pdf-copay"><b>Coparticipação:</b> ${copays}</p>${table.outerHTML}<p class="disclaimer">Somos representantes autorizados pelas operadoras de planos. Intermediamos a contratação e os valores e informações podem mudar a qualquer momento sem aviso prévio.</p>${contact ? `<p class="pdf-contact">${contact}</p>` : ""}${hospitalsPage}</body></html>`);
+    printWindow.document.close(); printWindow.focus(); window.setTimeout(() => printWindow.print(), 350);
   }
 
   async function generateValues() {
@@ -252,6 +288,7 @@ export default function QuoteResultPage() {
           <h2 style={{ marginTop: 0 }}>Planilha comparativa de valores</h2>
           <p style={{ color: "#52636e", marginTop: -4 }}>Cada linha representa uma faixa etária e o total das vidas nela incluídas.</p>
           <div style={{ overflowX: "auto" }}>
+            <div className="copay-summary" style={{ display: "flex", gap: 8, padding: "8px 10px", border: "1px solid #dce4e8", borderBottom: 0, background: "#f8fbff", fontSize: 12 }}><b>Coparticipação:</b>{visiblePlans.map(({ plan }) => <span key={plan.id}>{plan.name}: <b>{copayLabel(plan.copay_description)}</b></span>)}</div>
             <table className="desktop-quote-table" style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(780, 260 + visiblePlans.reduce((total, item) => total + (item.showWard ? 1 : 0) + (item.showApartment ? 1 : 0), 0) * 115) }}>
               <thead>
                 <tr style={{ background: "#edf4ff" }}><th rowSpan={2} style={{ textAlign: "left", padding: 10, verticalAlign: "bottom" }}>Faixa etária</th><th rowSpan={2} style={{ textAlign: "center", padding: 10, verticalAlign: "bottom" }}>Vidas</th>{visiblePlans.map(({ plan, showWard, showApartment }) => <th key={plan.id} colSpan={(showWard ? 1 : 0) + (showApartment ? 1 : 0)} style={{ textAlign: "center", padding: 10, borderLeft: "1px solid #dce4e8" }}>{plan.logo_url || plan.insurer?.logo_url ? <img className="plan-logo" src={plan.logo_url || plan.insurer?.logo_url || ""} alt={plan.name} /> : null}<span style={{ display: "block", fontWeight: 800, marginTop: 4 }}>{plan.name}</span></th>)}</tr>
@@ -268,7 +305,7 @@ export default function QuoteResultPage() {
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 22 }}>
             <a className="secondary" href={`/dashboard/quotes/members?quoteId=${quoteId}`}>Editar cotação</a>
-            <button onClick={generatePdf} className="secondary">Gerar PDF</button>
+            <button onClick={generatePdfLandscape} className="secondary">Gerar PDF</button>
             <button onClick={sendWhatsApp} className="primary">Enviar pelo WhatsApp</button>
           </div>
         </section>
