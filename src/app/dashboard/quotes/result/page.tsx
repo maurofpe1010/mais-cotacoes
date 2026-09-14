@@ -2,6 +2,8 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase";
+import { buildQuotePdf, printQuoteDocument } from "@/lib/quote-pdf";
+import { cleanQuoteTitle, firstRelation } from "@/lib/quote-title";
 
 type Quote = { id: string; quote_number: number | null; title: string | null; created_at: string };
 type Plan = {
@@ -41,7 +43,6 @@ function quoteCode(quote: Quote) {
   const yearMonth = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
   return `${yearMonth}${String(quote.quote_number ?? 0).padStart(3, "0")}`;
 }
-function escapeHtml(value: string) { return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character] ?? character); }
 function copayLabel(value: string | null) {
   const text = value?.trim();
   if (!text || /sem\s+coparticipa/i.test(text)) return "Sem coparticipação";
@@ -80,7 +81,7 @@ export default function QuoteResultPage() {
       ]);
 
       if (quotesResponse.data) setQuotes(quotesResponse.data as Quote[]);
-      if (plansResponse.data) setPlans(plansResponse.data as unknown as Plan[]);
+      if (plansResponse.data) setPlans((plansResponse.data as unknown as (Omit<Plan, "insurer"> & { insurer: Plan["insurer"] | NonNullable<Plan["insurer"]>[] })[]).map(plan => ({ ...plan, insurer: firstRelation(plan.insurer) ?? null })));
       const quoteFromUrl = new URLSearchParams(window.location.search).get("quoteId");
       if (quoteFromUrl) setQuoteId(quoteFromUrl);
       setLoading(false);
@@ -104,8 +105,8 @@ export default function QuoteResultPage() {
 
   const visiblePlans = useMemo(() => selectedPlans.map((plan) => ({
     plan,
-    showWard: results.some((row) => row.prices[plan.id]?.ward !== null),
-    showApartment: results.some((row) => row.prices[plan.id]?.apartment !== null),
+    showWard: results.some((row) => row.prices[plan.id]?.ward != null),
+    showApartment: results.some((row) => row.prices[plan.id]?.apartment != null),
   })).filter((item) => item.showWard || item.showApartment), [results, selectedPlans]);
 
   function togglePlan(planId: string) {
@@ -135,53 +136,38 @@ export default function QuoteResultPage() {
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank", "noopener,noreferrer");
   }
 
-  async function generatePdf() {
-    const table = document.getElementById("quote-results");
-    if (!table) return;
-    const client = supabaseBrowser();
-    const { data: membership } = await client.from("organization_members").select("organization_id").limit(1).single();
-    const { data: organization } = membership ? await client.from("organizations").select("logo_url,pdf_contact_name,whatsapp").eq("id", membership.organization_id).single() : { data: null };
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) { setMessage("Não foi possível abrir a impressão. Permita pop-ups para gerar o PDF."); return; }
-    const logoUrl = organization?.logo_url || document.querySelector("[data-org-logo]")?.getAttribute("src");
-    const logo = logoUrl ? `<img src="${logoUrl}" alt="Logo da corretora" style="max-width:220px;max-height:80px;object-fit:contain;display:block;margin-bottom:14px" />` : "";
-    const contact = [organization?.pdf_contact_name, organization?.whatsapp].filter(Boolean).map((item) => escapeHtml(item!)).join(" &nbsp; | &nbsp; ");
-    const hospitals = visiblePlans.filter(({ plan }) => plan.main_hospitals?.trim()).map(({ plan }) => `<article class="network-plan">${plan.logo_url || plan.insurer?.logo_url ? `<img class="plan-logo" src="${plan.logo_url || plan.insurer?.logo_url}" alt="${escapeHtml(plan.name)}" />` : `<h3>${escapeHtml(plan.name)}</h3>`}<h3>${escapeHtml(plan.insurer?.trade_name || plan.insurer?.legal_name || "Operadora")} — ${escapeHtml(plan.name)}</h3><p>${escapeHtml(plan.main_hospitals ?? "").replace(/\n/g, "<br />")}</p></article>`).join("");
-    const hospitalsPage = hospitals ? `<section class="network-page"><h2>Principais hospitais por plano</h2>${hospitals}</section>` : "";
-    printWindow.document.write(`<!doctype html><html lang="pt-BR"><head><title>Comparativo de planos</title><style>body{font-family:Arial,sans-serif;color:#17212f;padding:28px}h2{margin:0 0 8px}h3{font-size:14px;margin:8px 0}p{color:#52636e}.plan-logo{width:120px!important;height:48px!important;object-fit:contain!important;display:block;margin:0 auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:9px;border:1px solid #dce4e8}th{background:#edf4ff}button{display:none}.mobile-quote-cards,.mobile-quote-cards + div{display:none!important}.network-page{page-break-before:always;margin-top:30px}.network-plan{border:1px solid #dce4e8;border-radius:8px;padding:14px;margin:14px 0;page-break-inside:avoid}.pdf-contact{margin-top:18px;padding-top:12px;border-top:1px solid #dce4e8;font-size:13px;color:#334155}</style></head><body>${logo}<h2>MAIS COTAÇÕES</h2><p>Comparativo de planos</p>${table.outerHTML}${contact ? `<div class="pdf-contact">${contact}</div>` : ""}${hospitalsPage}</body></html>`);
-    printWindow.document.close();
-    printWindow.focus();
-    window.setTimeout(() => printWindow.print(), 350);
-  }
-
   async function generatePdfLandscape() {
-    const resultSection = document.getElementById("quote-results");
-    const table = resultSection?.querySelector(".desktop-quote-table");
-    const quote = quotes.find((item) => item.id === quoteId);
-    if (!table || !quote) return;
-    const client = supabaseBrowser();
-    const [{ data: membership }, { data: quoteData }] = await Promise.all([
-      client.from("organization_members").select("organization_id").limit(1).single(),
-      client.from("quotes").select("contracting_mode,lead:crm_leads(primary_contact:crm_contacts(full_name,phone))").eq("id", quoteId).single(),
-    ]);
-    const { data: organization } = membership ? await client.from("organizations").select("logo_url,pdf_contact_name,whatsapp").eq("id", membership.organization_id).single() : { data: null };
-    const lead = (quoteData as unknown as { lead?: { primary_contact?: { full_name?: string; phone?: string }[] }[] })?.lead?.[0];
-    const contactData = lead?.primary_contact?.[0];
-    const clientName = contactData?.full_name || quote.title || "Cliente não informado";
-    const customerWhatsApp = contactData?.phone || "Não informado";
-    const ages = results.map((row) => `${row.label}: ${row.lives} vida(s)`).join(" · ");
-    const copays = visiblePlans.map(({ plan }) => `${escapeHtml(plan.name)}: ${escapeHtml(copayLabel(plan.copay_description))}`).join(" &nbsp; | &nbsp; ");
-    const pdfColumns = visiblePlans.flatMap(({ plan, showWard, showApartment }) => [{ plan, accommodation: "Enfermaria", value: "ward" as const, visible: showWard }, { plan, accommodation: "Apartamento", value: "apartment" as const, visible: showApartment }]).filter((item) => item.visible).slice(0, 10);
-    const pdfTable = `<table class="comparison"><tbody><tr><th>Plano</th>${pdfColumns.map(({ plan }) => `<td>${plan.logo_url || plan.insurer?.logo_url ? `<img class="plan-logo" src="${plan.logo_url || plan.insurer?.logo_url}" alt="${escapeHtml(plan.name)}" />` : ""}</td>`).join("")}</tr><tr><th>Produto</th>${pdfColumns.map(({ plan }) => `<td><b>${escapeHtml(plan.name)}</b></td>`).join("")}</tr><tr><th>Administradora</th>${pdfColumns.map(({ plan }) => `<td>${escapeHtml(plan.insurer?.trade_name || plan.insurer?.legal_name || "—")}</td>`).join("")}</tr><tr><th>Acomodação</th>${pdfColumns.map(({ accommodation }) => `<td>${accommodation}</td>`).join("")}</tr><tr><th>Copart.</th>${pdfColumns.map(({ plan }) => `<td>${escapeHtml(copayLabel(plan.copay_description).replace("Coparticipação", "Copart."))}</td>`).join("")}</tr>${results.map((row) => `<tr><th>${escapeHtml(row.label)} (${row.lives})</th>${pdfColumns.map(({ plan, value }) => `<td>${currency.format(row.prices[plan.id]?.[value] ?? 0)}</td>`).join("")}</tr>`).join("")}<tr class="total"><th>TOTAL</th>${pdfColumns.map(({ plan, value }) => `<td>${currency.format(totalsForPlan(plan.id)[value])}</td>`).join("")}</tr></tbody></table>`;
-    const logoUrl = organization?.logo_url || document.querySelector("[data-org-logo]")?.getAttribute("src");
-    const logo = logoUrl ? `<img class="broker-logo" src="${logoUrl}" alt="Logo" />` : "";
-    const contact = "Mauro Fernando Melo · MAIS Consultoria de Planos de Saúde Recife · WhatsApp (81) 98237-8786</p><style>.comparison tr:nth-child(3){display:none}.pdf-header{border-color:#1769c2!important}.network-eyebrow{color:#1769c2;font-weight:800;letter-spacing:1.4px;margin:0 0 4px}.network-intro{color:#52636e;margin:0 0 14px}.network-plan{border-left:4px solid #1769c2!important}</style><p>";
-    const hospitals = visiblePlans.filter(({ plan }) => plan.main_hospitals?.trim()).map(({ plan }) => `<article class="network-plan">${plan.logo_url || plan.insurer?.logo_url ? `<img class="plan-logo" src="${plan.logo_url || plan.insurer?.logo_url}" alt="${escapeHtml(plan.name)}" />` : ""}<h3>${escapeHtml(plan.insurer?.trade_name || plan.insurer?.legal_name || "Operadora")} — ${escapeHtml(plan.name)}</h3><p>${escapeHtml(plan.main_hospitals ?? "").replace(/\n/g, "<br />")}</p></article>`).join("");
-    const hospitalsPage = hospitals ? `<section class="network-page"><p class="network-eyebrow">REDE DE ATENDIMENTO</p><h2>Principais Credenciados</h2><p class="network-intro">Consulte abaixo os destaques de rede, organizados por operadora e plano.</p>${hospitals}</section>` : "";
+    const quote = quotes.find(item => item.id === quoteId);
+    if (!quote || !visiblePlans.length) return;
+    // Open during the click, before asynchronous data queries, to avoid popup blocking.
     const printWindow = window.open("", "_blank");
     if (!printWindow) { setMessage("Não foi possível abrir a impressão. Permita pop-ups para gerar o PDF."); return; }
-    printWindow.document.write(`<!doctype html><html lang="pt-BR"><head><title>Cotação ${quoteCode(quote)}</title><style>@page{size:A4 landscape;margin:10mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#17212f;margin:0;font-size:11px}.pdf-header{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;border-bottom:2px solid #d100a8;padding-bottom:10px;margin-bottom:12px}.broker-logo{max-width:120px;max-height:48px;object-fit:contain}.customer h1{font-size:20px;margin:0 0 5px}.customer p{margin:2px 0;color:#405366}.quote-details{font-size:10px;line-height:1.5;text-align:right;max-width:46%}.pdf-copay{display:none}.comparison{width:100%;border-collapse:collapse;table-layout:fixed;font-size:10px}.comparison th,.comparison td{padding:7px 5px;border:1px solid #e4e5ea;text-align:center;vertical-align:middle}.comparison th{width:15%;text-align:left;background:#fbf3fa;font-weight:800}.comparison td{width:8.5%}.comparison .total th,.comparison .total td{font-weight:800;background:#f8f8fb}.plan-logo{width:54px!important;height:28px!important;object-fit:contain!important;display:block;margin:0 auto}.disclaimer{margin:12px 0 0;padding-top:9px;border-top:1px solid #dce4e8;font-size:10px;line-height:1.45;color:#425466}.pdf-contact{margin-top:7px;font-size:10px;color:#334155}.network-page{page-break-before:always}.network-page h2{font-size:20px;margin:0 0 16px}.network-plan{border:1px solid #dce4e8;border-radius:8px;padding:12px;margin:10px 0;page-break-inside:avoid}.network-plan h3{font-size:13px;margin:6px 0}.network-plan p{font-size:11px;line-height:1.45;margin:0;color:#405366}</style></head><body><header class="pdf-header">${logo}<div class="customer"><h1>${escapeHtml(clientName)}</h1><p>WhatsApp: ${escapeHtml(customerWhatsApp)}</p></div><div class="quote-details"><b>Cotação ${quoteCode(quote)}</b><br />Modalidade: ${escapeHtml(modeLabel[quoteData?.contracting_mode ?? ""] ?? quoteData?.contracting_mode ?? "Não informada")}<br />Idades/faixas informadas: ${escapeHtml(ages)}</div></header>${pdfTable}<p class="disclaimer">Somos representantes autorizados pelas operadoras de planos. Intermediamos a contratação e os valores e informações podem mudar a qualquer momento sem aviso prévio.</p>${contact ? `<p class="pdf-contact">${contact}</p>` : ""}${hospitalsPage}</body></html>`);
-    printWindow.document.close(); printWindow.focus(); window.setTimeout(() => printWindow.print(), 350);
+    printWindow.document.body.textContent = "Preparando proposta...";
+    try {
+      const client = supabaseBrowser();
+      const [membershipResponse, quoteResponse] = await Promise.all([
+        client.from("organization_members").select("organization_id").limit(1).single(),
+        client.from("quotes").select("contracting_mode,lead:crm_leads!quotes_lead_id_fkey(primary_contact:crm_contacts!crm_leads_primary_contact_id_fkey(full_name,phone))").eq("id", quoteId).single(),
+      ]);
+      if (membershipResponse.error || quoteResponse.error) throw new Error(membershipResponse.error?.message || quoteResponse.error?.message);
+      const { data: organization, error } = await client.from("organizations").select("logo_url").eq("id", membershipResponse.data.organization_id).single();
+      if (error) throw error;
+      type Contact = { full_name?: string; phone?: string };
+      type Lead = { primary_contact?: Contact | Contact[] | null };
+      const details = quoteResponse.data as unknown as { contracting_mode?: string; lead?: Lead | Lead[] | null };
+      const contact = firstRelation(firstRelation(details.lead)?.primary_contact);
+      const html = buildQuotePdf({
+        clientName: contact?.full_name || quote.title || "Cliente não informado",
+        whatsapp: contact?.phone || "Não informado",
+        code: quoteCode(quote), mode: modeLabel[details.contracting_mode ?? ""] || details.contracting_mode || "Não informada",
+        brokerLogo: organization?.logo_url || document.querySelector("[data-org-logo]")?.getAttribute("src") || "/mais-corretora-logo.png",
+        options: visiblePlans, rows: results,
+      });
+      await printQuoteDocument(printWindow, html);
+    } catch (error) {
+      if (!printWindow.closed) printWindow.close();
+      setMessage(`Não foi possível gerar o PDF: ${error instanceof Error ? error.message : "Verifique a conexão e tente novamente."}`);
+    }
   }
 
   async function generateValues() {
@@ -258,7 +244,7 @@ export default function QuoteResultPage() {
           Cotação
           <select value={quoteId} onChange={(event) => setQuoteId(event.target.value)} style={{ padding: 11, borderRadius: 8, border: "1px solid #aebfca", fontSize: 16 }}>
             <option value="">Selecione</option>
-            {quotes.map((quote) => <option key={quote.id} value={quote.id}>Cotação {quoteCode(quote)} — {quote.title || "Sem título"}</option>)}
+            {quotes.map((quote) => <option key={quote.id} value={quote.id}>Cotação {quoteCode(quote)} — {cleanQuoteTitle(quote.title) || "Sem título"}</option>)}
           </select>
         </label>
 
