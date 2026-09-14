@@ -1,0 +1,1 @@
+export default function ReportsPage() { return <><div className="eyebrow">Indicadores</div><h1>Relatórios</h1><div className="panel"><p>Acompanhe funil, conversão, operadoras, planos, valores e vidas quando os primeiros dados forem cadastrados.</p></div></>; }

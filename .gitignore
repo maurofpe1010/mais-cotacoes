@@ -1,0 +1,11 @@
+# Dependências e arquivos de compilação
+node_modules/
+.next/
+
+# Chaves locais: nunca enviar ao GitHub
+.env.local
+.env*.local
+
+# Arquivos do sistema
+.DS_Store
+*.log

@@ -1,0 +1,21 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
+import { supabaseBrowser } from "@/lib/supabase";
+
+type Insurer = { id: string; legal_name: string; trade_name: string | null; logo_url: string | null };
+type Plan = { id: string; insurer_id: string; name: string; accommodation: string; logo_url: string | null };
+const accommodation = (value: string) => value === "ward" ? "Enfermaria" : value === "apartment" ? "Apartamento" : "Não se aplica";
+
+export function CatalogImportShortcuts() {
+  const pathname = usePathname(); const [insurers, setInsurers] = useState<Insurer[]>([]); const [plans, setPlans] = useState<Plan[]>([]);
+  async function loadCatalog() { const client = supabaseBrowser(); const [insurerResult, planResult] = await Promise.all([client.from("insurers").select("id,legal_name,trade_name,logo_url").is("archived_at", null).order("legal_name"), client.from("insurer_plans").select("id,insurer_id,name,accommodation,logo_url").is("archived_at", null).order("name")]); setInsurers((insurerResult.data ?? []) as Insurer[]); setPlans((planResult.data ?? []) as Plan[]); }
+  useEffect(() => { if (pathname === "/dashboard/plans") void loadCatalog(); }, [pathname]);
+  useEffect(() => { if (pathname !== "/dashboard/plans") return; const timer = window.setTimeout(() => document.querySelectorAll("section.panel").forEach((section) => { if (section.querySelector("h2")?.textContent === "Planos cadastrados") (section as HTMLElement).style.display = "none"; }), 100); return () => window.clearTimeout(timer); }, [pathname, plans]);
+  async function archivePlan(plan: Plan) { if (!window.confirm(`Excluir o plano “${plan.name}”? Ele ficará arquivado e não aparecerá nas novas cotações.`)) return; await supabaseBrowser().from("insurer_plans").update({ archived_at: new Date().toISOString(), active: false }).eq("id", plan.id); await loadCatalog(); }
+  async function archiveInsurer(insurer: Insurer) { const name = insurer.trade_name ?? insurer.legal_name; if (!window.confirm(`Excluir a operadora “${name}” e arquivar seus planos?`)) return; const client = supabaseBrowser(); const timestamp = new Date().toISOString(); await client.from("insurer_plans").update({ archived_at: timestamp, active: false }).eq("insurer_id", insurer.id); await client.from("insurers").update({ archived_at: timestamp }).eq("id", insurer.id); await loadCatalog(); }
+  if (pathname !== "/dashboard/plans" || insurers.length === 0) return null;
+  return <section className="panel catalog-panel"><div className="panel-head"><div><h2>Planos por operadora</h2><p>{plans.length} plano(s) cadastrados e organizados por operadora.</p></div></div>{insurers.map((insurer) => { const insurerPlans = plans.filter((plan) => plan.insurer_id === insurer.id); return <article className="insurer-catalog-card" key={insurer.id}><header><div className="catalog-insurer-brand">{insurer.logo_url ? <img src={insurer.logo_url} alt={insurer.trade_name ?? insurer.legal_name} /> : <span>{(insurer.trade_name ?? insurer.legal_name).slice(0, 1)}</span>}<b>{insurer.trade_name ?? insurer.legal_name}</b></div><div><Link className="text-link" href={`/dashboard/pricing/import?insurer=${insurer.id}`}>Importar tabela</Link><button className="text-link delete-link" onClick={() => void archiveInsurer(insurer)}>Excluir</button></div></header><div className="plan-card-grid">{insurerPlans.length === 0 ? <p className="muted-text">Nenhum plano cadastrado.</p> : insurerPlans.map((plan) => <article className="plan-catalog-card" key={plan.id}>{plan.logo_url ? <img className="catalog-plan-logo" src={plan.logo_url} alt={plan.name} /> : <div className="catalog-plan-mark">{plan.name.slice(0, 1)}</div>}<b>{plan.name}</b><span>{accommodation(plan.accommodation)}</span><div><button className="text-link" onClick={() => window.dispatchEvent(new CustomEvent("mais-cotacoes:edit-plan", { detail: plan.id }))}>Editar</button><Link className="text-link" href={`/dashboard/pricing/import?insurer=${insurer.id}&plan=${plan.id}`}>Tabela</Link><button className="text-link delete-link" onClick={() => void archivePlan(plan)}>Excluir</button></div></article>)}</div></article>; })}</section>;
+}

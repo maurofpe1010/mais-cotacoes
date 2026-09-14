@@ -1,0 +1,1 @@
+export default function ProposalsPage() { return <><div className="eyebrow">Comercial</div><h1>Propostas</h1><div className="panel"><p>Propostas serão geradas a partir de um cenário selecionado, com PDF e histórico de envio.</p></div></>; }
