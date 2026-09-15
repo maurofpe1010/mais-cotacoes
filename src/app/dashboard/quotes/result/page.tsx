@@ -1,8 +1,8 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase";
-import { buildQuotePdf, printQuoteDocument } from "@/lib/quote-pdf";
+import { buildQuotePdf } from "@/lib/quote-pdf";
 import { cleanQuoteTitle, firstRelation } from "@/lib/quote-title";
 
 type Quote = { id: string; quote_number: number | null; title: string | null; created_at: string };
@@ -63,6 +63,10 @@ export default function QuoteResultPage() {
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
   const [results, setResults] = useState<CalculatedRow[]>([]);
   const [message, setMessage] = useState("");
+  const [pdfHtml, setPdfHtml] = useState("");
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfReady, setPdfReady] = useState(false);
+  const pdfFrame = useRef<HTMLIFrameElement>(null);
   const [loading, setLoading] = useState(true);
   const supabase = useMemo(() => supabaseBrowser(), []);
 
@@ -110,6 +114,7 @@ export default function QuoteResultPage() {
   })).filter((item) => item.showWard || item.showApartment), [results, selectedPlans]);
 
   function togglePlan(planId: string) {
+    setResults([]);
     setSelectedPlanIds((current) =>
       current.includes(planId) ? current.filter((id) => id !== planId) : [...current, planId],
     );
@@ -139,19 +144,19 @@ export default function QuoteResultPage() {
   async function generatePdfLandscape() {
     const quote = quotes.find(item => item.id === quoteId);
     if (!quote || !visiblePlans.length) return;
-    // Open during the click, before asynchronous data queries, to avoid popup blocking.
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) { setMessage("Não foi possível abrir a impressão. Permita pop-ups para gerar o PDF."); return; }
-    printWindow.document.body.textContent = "Preparando proposta...";
+    setMessage("");
+    setPdfLoading(true);
+    setPdfReady(false);
     try {
       const client = supabaseBrowser();
       const [membershipResponse, quoteResponse] = await Promise.all([
         client.from("organization_members").select("organization_id").limit(1).single(),
         client.from("quotes").select("contracting_mode,lead:crm_leads!quotes_lead_id_fkey(primary_contact:crm_contacts!crm_leads_primary_contact_id_fkey(full_name,phone))").eq("id", quoteId).single(),
       ]);
-      if (membershipResponse.error || quoteResponse.error) throw new Error(membershipResponse.error?.message || quoteResponse.error?.message);
-      const { data: organization, error } = await client.from("organizations").select("logo_url").eq("id", membershipResponse.data.organization_id).single();
-      if (error) throw error;
+      if (quoteResponse.error) throw new Error(quoteResponse.error.message);
+      const organization = membershipResponse.data?.organization_id
+        ? (await client.from("organizations").select("logo_url").eq("id", membershipResponse.data.organization_id).maybeSingle()).data
+        : null;
       type Contact = { full_name?: string; phone?: string };
       type Lead = { primary_contact?: Contact | Contact[] | null };
       const details = quoteResponse.data as unknown as { contracting_mode?: string; lead?: Lead | Lead[] | null };
@@ -163,10 +168,11 @@ export default function QuoteResultPage() {
         brokerLogo: organization?.logo_url || document.querySelector("[data-org-logo]")?.getAttribute("src") || "/mais-corretora-logo.png",
         options: visiblePlans, rows: results,
       });
-      await printQuoteDocument(printWindow, html);
+      setPdfHtml(html);
     } catch (error) {
-      if (!printWindow.closed) printWindow.close();
       setMessage(`Não foi possível gerar o PDF: ${error instanceof Error ? error.message : "Verifique a conexão e tente novamente."}`);
+    } finally {
+      setPdfLoading(false);
     }
   }
 
@@ -174,7 +180,7 @@ export default function QuoteResultPage() {
     setMessage("");
     setResults([]);
     if (!quoteId) return setMessage("Selecione uma cotação antes de gerar os valores.");
-    if (!selectedPlanIds.length) return setMessage("Abra uma operadora e selecione pelo menos um plano.");
+    if (!selectedPlanIds.length) return setMessage("Selecione pelo menos um plano nos cards.");
 
     const [{ data: members, error: membersError }, { data: tables, error: tablesError }] = await Promise.all([
       supabase.from("quote_members").select("birth_date").eq("quote_id", quoteId).eq("is_active", true),
@@ -242,28 +248,32 @@ export default function QuoteResultPage() {
       <section style={{ background: "white", border: "1px solid #dce4e8", borderRadius: 16, padding: 26, maxWidth: 1100 }}>
         <label style={{ display: "grid", gap: 8, fontWeight: 700 }}>
           Cotação
-          <select value={quoteId} onChange={(event) => setQuoteId(event.target.value)} style={{ padding: 11, borderRadius: 8, border: "1px solid #aebfca", fontSize: 16 }}>
+          <select value={quoteId} onChange={(event) => { setQuoteId(event.target.value); setResults([]); }} style={{ padding: 11, borderRadius: 8, border: "1px solid #aebfca", fontSize: 16 }}>
             <option value="">Selecione</option>
             {quotes.map((quote) => <option key={quote.id} value={quote.id}>Cotação {quoteCode(quote)} — {cleanQuoteTitle(quote.title) || "Sem título"}</option>)}
           </select>
         </label>
 
         <h2 style={{ margin: "28px 0 12px" }}>Planos para comparar</h2>
-        <p style={{ color: "#52636e", marginTop: 0 }}>Clique no nome da operadora para abrir os planos disponíveis.</p>
-        {loading ? <p>Carregando operadoras...</p> : plansByInsurer.map(([insurer, insurerPlans]) => (
-          <details key={insurer} style={{ border: "1px solid #dce4e8", borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
-            <summary style={{ cursor: "pointer", padding: "16px 18px", fontWeight: 800, fontSize: 18, display: "flex", justifyContent: "space-between", background: "#f6fbfa" }}>
-              <span>{insurer}</span><span style={{ color: "#52636e", fontSize: 14 }}>{insurerPlans.length} plano(s)</span>
-            </summary>
-            <div style={{ padding: "8px 18px 16px", display: "grid", gap: 10 }}>
-              {insurerPlans.map((plan) => (
-                <label key={plan.id} style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer" }}>
-                  <input type="checkbox" checked={selectedPlanIds.includes(plan.id)} onChange={() => togglePlan(plan.id)} />
-                  <span>{plan.name}{plan.accommodation ? ` — ${plan.accommodation}` : ""}</span>
-                </label>
-              ))}
+        <p style={{ color: "#52636e", marginTop: 0 }}>Selecione os planos que deseja comparar. {selectedPlanIds.length} selecionado(s).</p>
+        {loading ? <p>Carregando planos...</p> : plansByInsurer.map(([insurer, insurerPlans]) => (
+          <section key={insurer} style={{ marginBottom: 24 }}>
+            <h3 style={{ fontSize: 17, color: "#244766", marginBottom: 12 }}>{insurer}</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 12 }}>
+              {insurerPlans.map(plan => {
+                const selected = selectedPlanIds.includes(plan.id);
+                return <label key={plan.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: 18, border: `2px solid ${selected ? "#1769c2" : "#dce4e8"}`, borderRadius: 12, background: selected ? "#edf5ff" : "#fff", cursor: "pointer" }}>
+                  <input type="checkbox" checked={selected} onChange={() => togglePlan(plan.id)} style={{ width: 20, height: 20, accentColor: "#1769c2", flexShrink: 0 }} />
+                  <span style={{ display: "grid", gap: 7 }}>
+                    {(plan.logo_url || plan.insurer?.logo_url) && <img src={plan.logo_url || plan.insurer?.logo_url || ""} alt="" style={{ width: 85, height: 30, objectFit: "contain", objectPosition: "left" }} />}
+                    <strong style={{ fontSize: 18, color: "#142b48" }}>{plan.name}</strong>
+                    {plan.accommodation && <span style={{ color: "#52636e", fontSize: 13 }}>{plan.accommodation}</span>}
+                    <span style={{ color: "#52636e", fontSize: 12 }}>{copayLabel(plan.copay_description)}</span>
+                  </span>
+                </label>;
+              })}
             </div>
-          </details>
+          </section>
         ))}
         {!loading && !plans.length && <p>Nenhum plano ativo foi encontrado.</p>}
 
@@ -293,11 +303,27 @@ export default function QuoteResultPage() {
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 22 }}>
             <a className="secondary" href={`/dashboard/quotes/members?quoteId=${quoteId}`}>Editar cotação</a>
-            <button onClick={generatePdfLandscape} className="secondary">Gerar PDF</button>
+            <button onClick={generatePdfLandscape} disabled={pdfLoading} className="secondary">{pdfLoading ? "Preparando PDF..." : "Gerar PDF"}</button>
             <button onClick={sendWhatsApp} className="primary">Enviar pelo WhatsApp</button>
           </div>
+          {message && <p role="alert" style={{ color: "#a33b25" }}>{message}</p>}
         </section>
       )}
+      {pdfHtml && <div role="dialog" aria-modal="true" aria-label="Prévia da proposta" style={{ position: "fixed", inset: 0, zIndex: 1000, background: "#142b48aa", padding: "3vh 3vw", display: "flex" }}>
+        <section style={{ background: "white", borderRadius: 14, width: "100%", display: "flex", flexDirection: "column", padding: 16, gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+            <div><strong>Proposta pronta</strong><p style={{ margin: "4px 0", fontSize: 14 }}>Clique em Salvar PDF e escolha “Salvar como PDF” na impressão.</p></div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="primary" disabled={!pdfReady} onClick={() => {
+                try { const target = pdfFrame.current?.contentWindow; if (!target) throw new Error(); target.focus(); target.print(); }
+                catch { setMessage("Não foi possível abrir a impressão. Tente salvar pelo navegador."); }
+              }}>{pdfReady ? "Salvar PDF / Imprimir" : "Carregando prévia..."}</button>
+              <button className="secondary" onClick={() => setPdfHtml("")}>Fechar</button>
+            </div>
+          </div>
+          <iframe ref={pdfFrame} title="Prévia da proposta em PDF" srcDoc={pdfHtml} onLoad={() => setPdfReady(true)} style={{ flex: 1, width: "100%", border: "1px solid #dce4e8", background: "white" }} />
+        </section>
+      </div>}
     </main>
   );
 }
