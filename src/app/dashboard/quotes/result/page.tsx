@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase";
-import { buildQuotePdf } from "@/lib/quote-pdf";
+import { buildQuotePdf, printQuoteDocument } from "@/lib/quote-pdf";
 import { cleanQuoteTitle, firstRelation } from "@/lib/quote-title";
 
 type Quote = { id: string; quote_number: number | null; title: string | null; created_at: string };
@@ -312,15 +312,24 @@ export default function QuoteResultPage() {
       {pdfHtml && <div role="dialog" aria-modal="true" aria-label="Prévia da proposta" style={{ position: "fixed", inset: 0, zIndex: 1000, background: "#142b48aa", padding: "3vh 3vw", display: "flex" }}>
         <section style={{ background: "white", borderRadius: 14, width: "100%", display: "flex", flexDirection: "column", padding: 16, gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-            <div><strong>Proposta pronta</strong><p style={{ margin: "4px 0", fontSize: 14 }}>Clique em Salvar PDF e escolha “Salvar como PDF” na impressão.</p></div>
+            <div><strong>Proposta pronta</strong><p style={{ margin: "4px 0", fontSize: 14 }}>A cotação abrirá em uma página separada. Na impressão, escolha “Salvar como PDF”.</p></div>
             <div style={{ display: "flex", gap: 10 }}>
               <button className="primary" disabled={!pdfReady} onClick={() => {
-                try { const target = pdfFrame.current?.contentWindow; if (!target) throw new Error(); target.focus(); target.print(); }
-                catch { setMessage("Não foi possível abrir a impressão. Tente salvar pelo navegador."); }
+                const target = window.open("", "_blank");
+                if (!target) {
+                  setMessage("Permita a abertura da página da cotação no navegador para salvar somente a proposta.");
+                  return;
+                }
+                const standalone = pdfHtml.replace("</head>", `<style>.print-actions{padding:12px;background:#fff;position:sticky;top:0;text-align:center}.print-actions button{padding:12px 20px;font:700 16px Arial;cursor:pointer}@media print{.print-actions{display:none!important}}</style></head>`)
+                  .replace("<body>", `<body><div class="print-actions"><button onclick="window.print()">Salvar cotação como PDF / Imprimir</button></div>`);
+                void printQuoteDocument(target, standalone).catch(() => {
+                  setMessage("A cotação foi aberta em uma página separada. Use o botão de impressão nessa página.");
+                });
               }}>{pdfReady ? "Salvar PDF / Imprimir" : "Carregando prévia..."}</button>
               <button className="secondary" onClick={() => setPdfHtml("")}>Fechar</button>
             </div>
           </div>
+          {message && <p role="alert" style={{ color: "#a33b25", margin: 0 }}>{message}</p>}
           <iframe ref={pdfFrame} title="Prévia da proposta em PDF" srcDoc={pdfHtml} onLoad={() => setPdfReady(true)} style={{ flex: 1, width: "100%", border: "1px solid #dce4e8", background: "white" }} />
         </section>
       </div>}
