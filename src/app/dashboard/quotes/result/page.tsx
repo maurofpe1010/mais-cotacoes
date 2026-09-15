@@ -303,7 +303,7 @@ export default function QuoteResultPage() {
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 22 }}>
             <a className="secondary" href={`/dashboard/quotes/members?quoteId=${quoteId}`}>Editar cotação</a>
-            <button onClick={generatePdfLandscape} disabled={pdfLoading} className="secondary">{pdfLoading ? "Preparando PDF..." : "Gerar PDF"}</button>
+            <button onClick={generatePdfLandscape} disabled={pdfLoading} className="secondary">{pdfLoading ? "Preparando PDF..." : "Salvar PDF"}</button>
             <button onClick={sendWhatsApp} className="primary">Enviar pelo WhatsApp</button>
           </div>
           {message && <p role="alert" style={{ color: "#a33b25" }}>{message}</p>}
@@ -312,7 +312,7 @@ export default function QuoteResultPage() {
       {pdfHtml && <div role="dialog" aria-modal="true" aria-label="Prévia da proposta" style={{ position: "fixed", inset: 0, zIndex: 1000, background: "#142b48aa", padding: "3vh 3vw", display: "flex" }}>
         <section style={{ background: "white", borderRadius: 14, width: "100%", display: "flex", flexDirection: "column", padding: 16, gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-            <div><strong>Proposta pronta</strong><p style={{ margin: "4px 0", fontSize: 14 }}>A cotação abrirá em uma página separada. Na impressão, escolha “Salvar como PDF”.</p></div>
+            <div><strong>Proposta pronta</strong><p style={{ margin: "4px 0", fontSize: 14 }}>No computador: clique em Salvar PDF. Na janela de impressão, selecione o destino “Salvar como PDF” e clique em Salvar.</p></div>
             <div style={{ display: "flex", gap: 10 }}>
               <button className="primary" disabled={!pdfReady} onClick={() => {
                 const target = window.open("", "_blank");
@@ -321,11 +321,11 @@ export default function QuoteResultPage() {
                   return;
                 }
                 const standalone = pdfHtml.replace("</head>", `<style>.print-actions{padding:12px;background:#fff;position:sticky;top:0;text-align:center}.print-actions button{padding:12px 20px;font:700 16px Arial;cursor:pointer}@media print{.print-actions{display:none!important}}</style></head>`)
-                  .replace("<body>", `<body><div class="print-actions"><button onclick="window.print()">Salvar cotação como PDF / Imprimir</button></div>`);
+                  .replace("<body>", `<body><div class="print-actions"><button onclick="window.print()">Salvar PDF</button></div>`);
                 void printQuoteDocument(target, standalone).catch(() => {
                   setMessage("A cotação foi aberta em uma página separada. Use o botão de impressão nessa página.");
                 });
-              }}>{pdfReady ? "Salvar PDF / Imprimir" : "Carregando prévia..."}</button>
+              }}>{pdfReady ? "Salvar PDF" : "Carregando prévia..."}</button>
               <button className="secondary" onClick={() => setPdfHtml("")}>Fechar</button>
             </div>
           </div>
