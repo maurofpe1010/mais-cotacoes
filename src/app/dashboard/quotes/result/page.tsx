@@ -5,7 +5,7 @@ import { supabaseBrowser } from "@/lib/supabase";
 import { buildQuotePdf, printQuoteDocument } from "@/lib/quote-pdf";
 import { cleanQuoteTitle, firstRelation } from "@/lib/quote-title";
 
-type Quote = { id: string; quote_number: number | null; title: string | null; created_at: string };
+type Quote = { id: string; quote_number: number | null; title: string | null; created_at: string; contracting_mode?: string };
 type Plan = {
   id: string;
   name: string;
@@ -58,6 +58,8 @@ const currency = new Intl.NumberFormat("pt-BR", {
 
 export default function QuoteResultPage() {
   const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [planModes, setPlanModes] = useState<{ plan_id: string; contracting_mode: string }[]>([]);
+  const [selectedMode, setSelectedMode] = useState("individual");
   const [plans, setPlans] = useState<Plan[]>([]);
   const [quoteId, setQuoteId] = useState("");
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
@@ -72,18 +74,21 @@ export default function QuoteResultPage() {
 
   useEffect(() => {
     async function load() {
-      const [quotesResponse, plansResponse] = await Promise.all([
+      const [quotesResponse, plansResponse, modesResponse] = await Promise.all([
         supabase
           .from("quotes")
-          .select("id, quote_number, title, created_at")
+          .select("id, quote_number, title, created_at, contracting_mode")
           .order("created_at", { ascending: false }),
         supabase
           .from("insurer_plans")
           .select("id, name, accommodation, copay_description, logo_url, main_hospitals, insurer:insurers(trade_name, legal_name, logo_url)")
           .eq("active", true)
           .order("name"),
+        supabase.from("pricing_tables").select("plan_id, contracting_mode").eq("is_active", true).is("archived_at", null),
       ]);
 
+      if (modesResponse.error || plansResponse.error || quotesResponse.error) setMessage(modesResponse.error?.message || plansResponse.error?.message || quotesResponse.error?.message || "Não foi possível carregar os planos.");
+      setPlanModes(modesResponse.data ?? []);
       if (quotesResponse.data) setQuotes(quotesResponse.data as Quote[]);
       if (plansResponse.data) setPlans((plansResponse.data as unknown as (Omit<Plan, "insurer"> & { insurer: Plan["insurer"] | NonNullable<Plan["insurer"]>[] })[]).map(plan => ({ ...plan, insurer: firstRelation(plan.insurer) ?? null })));
       const quoteFromUrl = new URLSearchParams(window.location.search).get("quoteId");
@@ -93,18 +98,30 @@ export default function QuoteResultPage() {
     void load();
   }, [supabase]);
 
+  useEffect(() => {
+    const mode = quotes.find(quote => quote.id === quoteId)?.contracting_mode;
+    if (mode && modeLabel[mode]) setSelectedMode(mode);
+    setSelectedPlanIds([]);
+    setResults([]);
+  }, [quoteId, quotes]);
+
+  const availablePlans = useMemo(() => {
+    const ids = new Set(planModes.filter(item => item.contracting_mode === selectedMode).map(item => item.plan_id));
+    return plans.filter(plan => ids.has(plan.id));
+  }, [plans, planModes, selectedMode]);
+
   const plansByInsurer = useMemo(() => {
     const groups = new Map<string, Plan[]>();
-    plans.forEach((plan) => {
+    availablePlans.forEach((plan) => {
       const insurer = plan.insurer?.trade_name || plan.insurer?.legal_name || "Operadora não informada";
       groups.set(insurer, [...(groups.get(insurer) ?? []), plan]);
     });
     return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b, "pt-BR")).map(([insurer, insurerPlans]) => [insurer, [...insurerPlans].sort((a, b) => planOrder(a) - planOrder(b) || a.name.localeCompare(b.name, "pt-BR"))] as [string, Plan[]]);
-  }, [plans]);
+  }, [availablePlans]);
 
   const selectedPlans = useMemo(
-    () => plans.filter((plan) => selectedPlanIds.includes(plan.id)).sort((a, b) => planOrder(a) - planOrder(b) || a.name.localeCompare(b.name, "pt-BR")),
-    [plans, selectedPlanIds],
+    () => availablePlans.filter((plan) => selectedPlanIds.includes(plan.id)).sort((a, b) => planOrder(a) - planOrder(b) || a.name.localeCompare(b.name, "pt-BR")),
+    [availablePlans, selectedPlanIds],
   );
 
   const visiblePlans = useMemo(() => selectedPlans.map((plan) => ({
@@ -164,7 +181,7 @@ export default function QuoteResultPage() {
       const html = buildQuotePdf({
         clientName: contact?.full_name || quote.title || "Cliente não informado",
         whatsapp: contact?.phone || "Não informado",
-        code: quoteCode(quote), mode: modeLabel[details.contracting_mode ?? ""] || details.contracting_mode || "Não informada",
+        code: quoteCode(quote), mode: modeLabel[selectedMode] || "Não informada",
         brokerLogo: organization?.logo_url || document.querySelector("[data-org-logo]")?.getAttribute("src") || "/mais-corretora-logo.png",
         options: visiblePlans, rows: results,
       });
@@ -188,6 +205,7 @@ export default function QuoteResultPage() {
         .from("pricing_tables")
         .select("id, plan_id")
         .in("plan_id", selectedPlanIds)
+        .eq("contracting_mode", selectedMode)
         .eq("is_active", true)
         .is("archived_at", null),
     ]);
@@ -255,18 +273,26 @@ export default function QuoteResultPage() {
         </label>
 
         <h2 style={{ margin: "28px 0 12px" }}>Planos para comparar</h2>
+        <label style={{ display: "grid", gap: 6, maxWidth: 320, fontWeight: 700, marginBottom: 14 }}>
+          Modalidade dos planos
+          <select value={selectedMode} onChange={event => { setSelectedMode(event.target.value); setSelectedPlanIds([]); setResults([]); setMessage(""); }} style={{ padding: "10px 12px", border: "1px solid #bdcddd", borderRadius: 8, background: "white", color: "#142b48", fontSize: 15 }}>
+            <option value="individual">Individual</option>
+            <option value="adhesion">Adesão</option>
+            <option value="corporate">Empresarial</option>
+          </select>
+        </label>
         <p style={{ color: "#52636e", marginTop: 0 }}>Selecione os planos que deseja comparar. {selectedPlanIds.length} selecionado(s).</p>
         {loading ? <p>Carregando planos...</p> : plansByInsurer.map(([insurer, insurerPlans]) => (
-          <section key={insurer} style={{ marginBottom: 24 }}>
-            <h3 style={{ fontSize: 17, color: "#244766", marginBottom: 12 }}>{insurer}</h3>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 12 }}>
+          <section key={insurer} style={{ marginBottom: 16 }}>
+            <h3 style={{ fontSize: 15, color: "#244766", marginBottom: 8 }}>{insurer}</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 170px), 1fr))", gap: 8 }}>
               {insurerPlans.map(plan => {
                 const selected = selectedPlanIds.includes(plan.id);
-                return <label key={plan.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: 18, border: `2px solid ${selected ? "#1769c2" : "#dce4e8"}`, borderRadius: 12, background: selected ? "#edf5ff" : "#fff", cursor: "pointer" }}>
-                  <input type="checkbox" checked={selected} onChange={() => togglePlan(plan.id)} style={{ width: 20, height: 20, accentColor: "#1769c2", flexShrink: 0 }} />
-                  <span style={{ display: "grid", gap: 7 }}>
-                    {(plan.logo_url || plan.insurer?.logo_url) && <img src={plan.logo_url || plan.insurer?.logo_url || ""} alt="" style={{ width: 85, height: 30, objectFit: "contain", objectPosition: "left" }} />}
-                    <strong style={{ fontSize: 18, color: "#142b48" }}>{plan.name}</strong>
+                return <label key={plan.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: 10, border: `2px solid ${selected ? "#1769c2" : "#dce4e8"}`, borderRadius: 9, background: selected ? "#edf5ff" : "#fff", cursor: "pointer" }}>
+                  <input type="checkbox" checked={selected} onChange={() => togglePlan(plan.id)} style={{ width: 18, height: 18, accentColor: "#1769c2", flexShrink: 0 }} />
+                  <span style={{ display: "grid", gap: 4 }}>
+                    {(plan.logo_url || plan.insurer?.logo_url) && <img src={plan.logo_url || plan.insurer?.logo_url || ""} alt="" style={{ width: 65, height: 22, objectFit: "contain", objectPosition: "left" }} />}
+                    <strong style={{ fontSize: 15, color: "#142b48" }}>{plan.name}</strong>
                     {plan.accommodation && <span style={{ color: "#52636e", fontSize: 13 }}>{plan.accommodation}</span>}
                     <span style={{ color: "#52636e", fontSize: 12 }}>{copayLabel(plan.copay_description)}</span>
                   </span>
@@ -275,7 +301,7 @@ export default function QuoteResultPage() {
             </div>
           </section>
         ))}
-        {!loading && !plans.length && <p>Nenhum plano ativo foi encontrado.</p>}
+        {!loading && !availablePlans.length && <p>Nenhum plano com tabela ativa para {modeLabel[selectedMode]}. Verifique a modalidade cadastrada nas tabelas de preço.</p>}
 
         <button onClick={() => void generateValues()} style={{ marginTop: 20, border: 0, borderRadius: 8, background: "#1769c2", color: "white", padding: "14px 20px", fontSize: 16, fontWeight: 800, cursor: "pointer" }}>Gerar valores</button>
         {message && <p style={{ color: "#a33b25", fontWeight: 600 }}>{message}</p>}
@@ -303,7 +329,7 @@ export default function QuoteResultPage() {
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 22 }}>
             <a className="secondary" href={`/dashboard/quotes/members?quoteId=${quoteId}`}>Editar cotação</a>
-            <button onClick={generatePdfLandscape} disabled={pdfLoading} className="secondary">{pdfLoading ? "Preparando PDF..." : "Salvar PDF"}</button>
+            <button onClick={generatePdfLandscape} disabled={pdfLoading} className="secondary">{pdfLoading ? "Preparando PDF..." : "Gerar PDF"}</button>
             <button onClick={sendWhatsApp} className="primary">Enviar pelo WhatsApp</button>
           </div>
           {message && <p role="alert" style={{ color: "#a33b25" }}>{message}</p>}
