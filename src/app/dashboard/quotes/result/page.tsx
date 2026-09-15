@@ -49,7 +49,7 @@ function copayLabel(value: string | null) {
   if (/total/i.test(text)) return "Coparticipação total";
   return "Coparticipação parcial";
 }
-const modeLabel: Record<string, string> = { individual: "Individual", adhesion: "Adesão", corporate: "Empresarial" };
+const modeLabel: Record<string, string> = { individual: "Individual", adhesion: "Adesão", corporate: "Empresarial", individual_adhesion: "Individual/Adesão" };
 
 const currency = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -59,7 +59,7 @@ const currency = new Intl.NumberFormat("pt-BR", {
 export default function QuoteResultPage() {
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [planModes, setPlanModes] = useState<{ plan_id: string; contracting_mode: string }[]>([]);
-  const [selectedMode, setSelectedMode] = useState("individual");
+  const [selectedMode, setSelectedMode] = useState("individual_adhesion");
   const [plans, setPlans] = useState<Plan[]>([]);
   const [quoteId, setQuoteId] = useState("");
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
@@ -100,15 +100,17 @@ export default function QuoteResultPage() {
 
   useEffect(() => {
     const mode = quotes.find(quote => quote.id === quoteId)?.contracting_mode;
-    if (mode && modeLabel[mode]) setSelectedMode(mode);
+    if (mode && modeLabel[mode]) setSelectedMode(mode === "corporate" ? "corporate" : "individual_adhesion");
     setSelectedPlanIds([]);
     setResults([]);
   }, [quoteId, quotes]);
 
+  const selectedModes = useMemo(() => selectedMode === "corporate" ? ["corporate"] : ["individual", "adhesion"], [selectedMode]);
+
   const availablePlans = useMemo(() => {
-    const ids = new Set(planModes.filter(item => item.contracting_mode === selectedMode).map(item => item.plan_id));
+    const ids = new Set(planModes.filter(item => selectedModes.includes(item.contracting_mode)).map(item => item.plan_id));
     return plans.filter(plan => ids.has(plan.id));
-  }, [plans, planModes, selectedMode]);
+  }, [plans, planModes, selectedModes]);
 
   const plansByInsurer = useMemo(() => {
     const groups = new Map<string, Plan[]>();
@@ -205,7 +207,7 @@ export default function QuoteResultPage() {
         .from("pricing_tables")
         .select("id, plan_id")
         .in("plan_id", selectedPlanIds)
-        .eq("contracting_mode", selectedMode)
+        .in("contracting_mode", selectedModes)
         .eq("is_active", true)
         .is("archived_at", null),
     ]);
@@ -276,8 +278,7 @@ export default function QuoteResultPage() {
         <label style={{ display: "grid", gap: 6, maxWidth: 320, fontWeight: 700, marginBottom: 14 }}>
           Modalidade dos planos
           <select value={selectedMode} onChange={event => { setSelectedMode(event.target.value); setSelectedPlanIds([]); setResults([]); setMessage(""); }} style={{ padding: "10px 12px", border: "1px solid #bdcddd", borderRadius: 8, background: "white", color: "#142b48", fontSize: 15 }}>
-            <option value="individual">Individual</option>
-            <option value="adhesion">Adesão</option>
+            <option value="individual_adhesion">Individual/Adesão</option>
             <option value="corporate">Empresarial</option>
           </select>
         </label>
