@@ -2,6 +2,8 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase";
+import { CompanyLookup } from "@/components/company-lookup";
+import { Company } from "@/lib/company";
 import { cleanQuoteTitle, firstRelation } from "@/lib/quote-title";
 
 type CrmLead = { id: string; title: string; lead_kind: "individual" | "adhesion" | "corporate"; stage: string; primary_contact: { full_name: string } | null };
@@ -15,6 +17,7 @@ export default function QuotesPage() {
   const [organizationId, setOrganizationId] = useState<string | null>(null);
   const [leads, setLeads] = useState<CrmLead[]>([]);
   const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [company, setCompany] = useState<Company | null>(null);
   const [leadId, setLeadId] = useState("");
   const [title, setTitle] = useState("");
   const [validUntil, setValidUntil] = useState("");
@@ -40,7 +43,7 @@ export default function QuotesPage() {
   useEffect(() => { void loadData(); }, []);
 
   function selectLead(id: string) {
-    setLeadId(id);
+    setLeadId(id); setCompany(null);
     const lead = leads.find((item) => item.id === id);
     setTitle(lead ? cleanQuoteTitle(lead.primary_contact?.full_name || lead.title) : "");
   }
@@ -51,7 +54,8 @@ export default function QuotesPage() {
     setSaving(true); setError("");
     const client = supabaseBrowser(); const lead = leads.find((item) => item.id === leadId);
     if (!lead) { setError("Selecione uma oportunidade válida."); setSaving(false); return; }
-    const { data: quote, error: quoteError } = await client.from("quotes").insert({ organization_id: organizationId, lead_id: leadId, title: cleanQuoteTitle(title), contracting_mode: lead.lead_kind, valid_until: validUntil || null }).select("id,quote_number").single();
+    if (lead.lead_kind === "corporate" && !company) { setError("Informe um CNPJ válido e aguarde a consulta antes de continuar."); setSaving(false); return; }
+    const { data: quote, error: quoteError } = await client.from("quotes").insert({ organization_id: organizationId, lead_id: leadId, title: cleanQuoteTitle(title), contracting_mode: lead.lead_kind, valid_until: validUntil || null, ...(lead.lead_kind === "corporate" ? { company_cnpj: company!.cnpj, company_data: company } : {}) }).select("id,quote_number").single();
     if (quoteError || !quote) { setError(quoteError?.message ?? "Não foi possível criar a cotação."); setSaving(false); return; }
     await client.from("crm_leads").update({ stage: "quoting" }).eq("id", leadId);
     await client.from("crm_activities").insert({ organization_id: organizationId, lead_id: leadId, activity_type: "status_change", subject: "Cotação criada", body: `Cotação ${quote.quote_number} criada pelo aplicativo.` });
@@ -69,9 +73,10 @@ export default function QuotesPage() {
     <header className="topbar"><div><div className="eyebrow">Cotações</div><h1>Nova cotação</h1></div><a className="primary" href="#new-quote-form">+ Nova cotação</a></header>
     {showForm && <section id="new-quote-form" className="panel quote-form-panel" style={{ maxWidth: 760, marginBottom: 20 }}><h2>1. Selecione o cliente</h2><p style={{ color: "#64748b", fontSize: 13 }}>Escolha um prospect do CRM. Em seguida, você incluirá as idades e selecionará os planos.</p><form onSubmit={createQuote}>
       <label className="field">Cliente / prospect do CRM<select value={leadId} onChange={(event) => selectLead(event.target.value)} required style={{ border: "1px solid #ccd6dd", borderRadius: 8, padding: 12, background: "white" }}><option value="">Selecione um prospect</option>{leads.map((lead) => <option key={lead.id} value={lead.id}>{lead.primary_contact?.full_name ?? lead.title} — {labels[lead.lead_kind]}</option>)}</select></label>
+      {leads.find(lead => lead.id === leadId)?.lead_kind === "corporate" && <CompanyLookup key={leadId} onChange={setCompany} />}
       <label className="field">Título da cotação<input value={title} onChange={(event) => setTitle(event.target.value)} required placeholder="Ex.: Nome do titular" /></label>
       <label className="field">Validade <span style={{ fontWeight: 400, color: "#64748b" }}>(opcional)</span><input type="date" value={validUntil} onChange={(event) => setValidUntil(event.target.value)} /></label>
-      {error && <p className="error">{error}</p>}<button className="primary" disabled={saving || leads.length === 0}>{saving ? "Criando…" : "Continuar para as idades"}</button>
+      {error && <p className="error">{error}</p>}<button className="primary" disabled={saving || leads.length === 0 || (leads.find(lead => lead.id === leadId)?.lead_kind === "corporate" && !company)}>{saving ? "Criando…" : "Continuar para as idades"}</button>
       {leads.length === 0 && <p className="error">Cadastre pelo menos um prospect no CRM antes de criar a cotação.</p>}
     </form></section>}
     <section className="panel"><div className="panel-head"><h2>Cotações criadas</h2><span style={{ color: "#64748b", fontSize: 13 }}>{quotes.length} cotação(ões)</span></div>
