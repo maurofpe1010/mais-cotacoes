@@ -1,17 +1,21 @@
+import { Company } from "./company";
+import { discountFor, ruleDescription, totalsWithIof } from "./plan-rules";
 import { cleanQuoteTitle } from "./quote-title";
 
 export type PdfPlan = {
   id: string; name: string; logo_url: string | null; main_hospitals: string | null;
   copay_description: string | null;
+  observations?: string | null; iof_percent?: number | null; discount_percent?: number | null; discount_min_lives?: number | null;
   insurer: { trade_name: string | null; legal_name: string | null; logo_url: string | null } | null;
 };
 export type PdfRow = { label: string; lives: number; prices: Record<string, { ward: number | null; apartment: number | null }> };
 export type PdfOption = { plan: PdfPlan; showWard: boolean; showApartment: boolean };
 export type PdfInput = {
   clientName: string; whatsapp: string; code: string; mode: string;
+  company?: Company | null; isCorporate?: boolean;
   brokerLogo: string | null; options: PdfOption[]; rows: PdfRow[];
 };
-type Column = { plan: PdfPlan; value: "ward" | "apartment"; accommodation: string; total: number };
+type Column = { plan: PdfPlan; value: "ward" | "apartment"; accommodation: string; total: number; subtotal: number; iof: number; iofPercent: number };
 const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[ch]!);
@@ -25,14 +29,15 @@ function copay(value: string | null) {
   if (!value?.trim() || /sem\s+coparticipa/i.test(value)) return "Sem coparticipação";
   return /total/i.test(value) ? "Copart. total" : "Copart. parcial";
 }
-export function groupedColumns(options: PdfOption[], rows: PdfRow[]): [string, Column[]][] {
+export function groupedColumns(options: PdfOption[], rows: PdfRow[], corporate = false): [string, Column[]][] {
   const groups = new Map<string, Column[]>();
   for (const { plan, showWard, showApartment } of options) {
     const name = insurerName(plan);
     const columns = groups.get(name) ?? [];
     for (const value of ["ward", "apartment"] as const) {
       if (!(value === "ward" ? showWard : showApartment)) continue;
-      columns.push({ plan, value, accommodation: value === "ward" ? "Enfermaria" : "Apartamento", total: rows.reduce((sum, row) => sum + (row.prices[plan.id]?.[value] ?? 0), 0) });
+      const amounts = totalsWithIof(rows.reduce((sum, row) => sum + (row.prices[plan.id]?.[value] ?? 0), 0), plan, corporate);
+      columns.push({ plan, value, accommodation: value === "ward" ? "Enfermaria" : "Apartamento", total: amounts.total, subtotal: amounts.subtotal, iof: amounts.iof, iofPercent: amounts.percent });
     }
     if (columns.length) groups.set(name, columns);
   }
@@ -41,12 +46,14 @@ export function groupedColumns(options: PdfOption[], rows: PdfRow[]): [string, C
     .map(([name, columns]) => [name, columns.sort((a, b) => a.total - b.total || a.plan.name.localeCompare(b.plan.name, "pt-BR"))]);
 }
 export function buildQuotePdf(input: PdfInput): string {
-  const groups = groupedColumns(input.options, input.rows);
+  const groups = groupedColumns(input.options, input.rows, input.isCorporate ?? input.mode === "Empresarial");
   const allColumns = groups.flatMap(([, columns]) => columns);
   const broker = image(input.brokerLogo, "MAIS Consultoria", "broker-logo");
   const clientName = cleanQuoteTitle(input.clientName) || "Cliente não informado";
   const ages = input.rows.map(row => `${row.label} (${row.lives} vida${row.lives === 1 ? "" : "s"})`).join(" · ");
   const contact = "Nome: Mauro Fernando Melo - MAIS Consultoria de planos de saúde Recife - WhatsApp (81) 98237-8786";
+  const lives = input.rows.reduce((sum,row) => sum + row.lives, 0);
+  const companyInfo = input.company ? `<p class="company-info">${escapeHtml(input.company.name)} · CNPJ: ${escapeHtml(input.company.cnpj)} · ${escapeHtml(input.company.city)} / ${escapeHtml(input.company.state)} · ${escapeHtml(input.company.status)}</p>` : "";
   const valuePages: string[] = [];
   // Continue on another landscape page instead of silently omitting columns after ten.
   for (let offset = 0; offset < allColumns.length; offset += 10) {
@@ -57,9 +64,11 @@ export function buildQuotePdf(input: PdfInput): string {
       row("Produto", ({ plan }) => `<b>${escapeHtml(plan.name)}</b>`) +
       row("Acomodação", ({ accommodation }) => accommodation) +
       row("Coparticipação", ({ plan }) => escapeHtml(copay(plan.copay_description))) +
+      (columns.some(({plan}) => ruleDescription(plan)) ? row("Desconto", ({plan}) => discountFor(plan,lives) > 0 ? `${discountFor(plan,lives)}% aplicado` : "Não aplicado") : "") +
       input.rows.map(band => row(`${escapeHtml(band.label)} (${band.lives})`, ({ plan, value }) => money.format(band.prices[plan.id]?.[value] ?? 0))).join("") +
-      row("TOTAL", ({ total }) => money.format(total), "total") + `</tbody></table>`;
-    valuePages.push(`<section class="sheet values-page">${broker}<header class="pdf-header"><h1>Comparativo de valores de planos de saúde</h1><p class="customer">Titular: ${escapeHtml(clientName)} &nbsp; | &nbsp; WhatsApp: ${escapeHtml(input.whatsapp || "Não informado")}</p><p class="ages">${escapeHtml(ages)}</p><p class="details">Cotação ${escapeHtml(input.code)} &nbsp; | &nbsp; Modalidade: ${escapeHtml(input.mode)}</p></header><div class="values-content"><p class="eyebrow">PLANOS ORGANIZADOS POR OPERADORA${offset ? " · CONTINUAÇÃO" : ""}</p>${table}<p class="disclaimer">Somos representantes autorizados pelas operadoras de planos. Intermediamos a contratação e os valores e informações podem mudar a qualquer momento sem aviso prévio.</p><p class="pdf-contact">${contact}</p></div></section>`);
+      ((input.isCorporate ?? input.mode === "Empresarial") ? row("Subtotal", ({subtotal}) => money.format(subtotal)) + row("IOF", ({iof,iofPercent}) => `${iofPercent}% · ${money.format(iof)}`) : "") +
+      row((input.isCorporate ?? input.mode === "Empresarial") ? "TOTAL COM IOF" : "TOTAL", ({ total }) => money.format(total), "total") + `</tbody></table>`;
+    valuePages.push(`<section class="sheet values-page">${broker}<header class="pdf-header"><h1>Comparativo de valores de planos de saúde</h1><p class="customer">Titular: ${escapeHtml(clientName)} &nbsp; | &nbsp; WhatsApp: ${escapeHtml(input.whatsapp || "Não informado")}</p><p class="ages">${escapeHtml(ages)}</p><p class="details">Cotação ${escapeHtml(input.code)} &nbsp; | &nbsp; Modalidade: ${escapeHtml(input.mode)}</p>${companyInfo}</header><div class="values-content"><p class="eyebrow">PLANOS ORGANIZADOS POR OPERADORA${offset ? " · CONTINUAÇÃO" : ""}</p>${table}<p class="disclaimer">Somos representantes autorizados pelas operadoras de planos. Intermediamos a contratação e os valores e informações podem mudar a qualquer momento sem aviso prévio.</p><p class="pdf-contact">${contact}</p></div></section>`);
   }
   const networkPages: string[] = [];
   // One card per plan, keeping operator and price order; accommodations share their network.
@@ -77,12 +86,13 @@ export function buildQuotePdf(input: PdfInput): string {
       const hospitals = plan.main_hospitals?.trim()
         ? `<p>${escapeHtml(plan.main_hospitals).replace(/\r?\n/g, "<br>")}</p>`
         : `<p class="blank-hospitals">Hospitais: <span></span></p>`;
-      return `<article class="operator-card"><header class="operator-heading">${image(plan.insurer?.logo_url || plan.logo_url, name, "operator-logo")}<h2>${escapeHtml(name)}</h2></header><div class="network-plan"><h3>${escapeHtml(plan.name)} | ${accommodations.join(" / ")}</h3>${hospitals}</div></article>`;
+      const notes = `${plan.observations?.trim() ? `<p class="plan-notes"><b>Observações:</b> ${escapeHtml(plan.observations).replace(/\r?\n/g, "<br>")}</p>` : ""}${ruleDescription(plan) ? `<p class="plan-notes"><b>${escapeHtml(ruleDescription(plan))}</b> · ${discountFor(plan,lives) > 0 ? "Já aplicado aos valores da proposta." : "Mínimo não atingido nesta cotação."}</p>` : ""}`;
+      return `<article class="operator-card"><header class="operator-heading">${image(plan.insurer?.logo_url || plan.logo_url, name, "operator-logo")}<h2>${escapeHtml(name)}</h2></header><div class="network-plan"><h3>${escapeHtml(plan.name)} | ${accommodations.join(" / ")}</h3>${hospitals}${notes}</div></article>`;
     }).join("");
     networkPages.push(`<section class="sheet network-page">${broker}<header class="pdf-header"><h1>Principais Credenciados</h1><p class="customer">Rede de atendimento por operadora e plano</p></header><div class="network-grid">${cards}</div></section>`);
   }
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Comparativo de valores de planos de saúde - ${escapeHtml(clientName)}</title><style>
-@page{size:A4 landscape;margin:7mm}*{box-sizing:border-box}body{margin:0;color:#142b48;font-family:Arial,sans-serif;font-size:9pt;-webkit-print-color-adjust:exact;print-color-adjust:exact}.sheet{position:relative;min-height:0;padding:6mm 2mm 3mm;break-after:page;page-break-after:always}.sheet:last-child{break-after:auto;page-break-after:auto}.broker-logo{position:absolute;top:0;left:2mm;width:30mm;height:13.5mm;object-fit:contain;object-position:left top}.pdf-header{text-align:center;border-bottom:1.5pt solid #1469cb;padding-bottom:3mm}h1{font-size:22pt;line-height:1.15;margin:0 32mm 3mm;font-weight:700}.customer{font-size:11pt;line-height:1.4;margin:0 32mm 3mm}.ages{font-size:9pt;line-height:1.6;max-width:210mm;margin:0 auto 3mm;color:#52677e}.details{font-size:8pt;color:#52677e;margin:0}.values-content{margin-top:5mm}.eyebrow{font-size:8pt;font-weight:700;color:#1469cb;margin:0 0 3mm}.comparison{width:100%;border-collapse:collapse;table-layout:fixed;font-size:7.2pt}.comparison th,.comparison td{border:.4pt solid #d8e2ed;padding:2mm 1mm;text-align:center;vertical-align:middle;overflow-wrap:anywhere}.comparison th{text-align:left;font-weight:700}.comparison tr:nth-child(odd){background:#f3f7fb}.comparison .logos{background:white}.plan-logo{display:block;margin:auto;width:18mm;height:8mm;object-fit:contain}.comparison .total th,.comparison .total td{background:#1469cb;color:white;font-weight:700}.total td{white-space:nowrap}.disclaimer{font-size:7.5pt;line-height:1.4;color:#52677e;text-align:center;margin:5mm 0 3mm}.pdf-contact{break-before:avoid;page-break-before:avoid;text-align:center;font-size:8pt;line-height:1.4;font-weight:700;margin:0}.network-page{display:block}.network-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:repeat(3,minmax(40mm,auto));grid-auto-flow:column;gap:4mm 6mm;margin-top:5mm;align-items:stretch}.operator-card{border:.5pt solid #d8e2ed;border-radius:3mm;background:#f3f7fb;padding:3mm;min-height:40mm;break-inside:avoid}.operator-heading{display:flex;align-items:center;gap:5mm;border-bottom:.5pt solid #d8e2ed;padding-bottom:2mm;margin-bottom:2mm}.operator-logo{width:18mm;height:8mm;object-fit:contain;object-position:left center}.operator-heading h2{font-size:11pt;margin:0}.network-plan{break-inside:avoid;padding:1mm 0 2mm}.network-plan+.network-plan{border-top:.5pt solid #d8e2ed}.network-plan h3{font-size:9pt;margin:0 0 2mm}.network-plan p{font-size:7.2pt;line-height:1.5;margin:0;overflow-wrap:anywhere}.blank-hospitals{display:flex;gap:3mm;color:#52677e}.blank-hospitals span{flex:1;border-bottom:.5pt solid #d8e2ed}.network-page .pdf-header{padding-bottom:3mm}.network-page .customer{margin-bottom:0}tr{break-inside:avoid}
+@page{size:A4 landscape;margin:7mm}*{box-sizing:border-box}body{margin:0;color:#142b48;font-family:Arial,sans-serif;font-size:9pt;-webkit-print-color-adjust:exact;print-color-adjust:exact}.sheet{position:relative;min-height:0;padding:6mm 2mm 3mm;break-after:page;page-break-after:always}.sheet:last-child{break-after:auto;page-break-after:auto}.broker-logo{position:absolute;top:0;left:2mm;width:30mm;height:13.5mm;object-fit:contain;object-position:left top}.pdf-header{text-align:center;border-bottom:1.5pt solid #1469cb;padding-bottom:3mm}h1{font-size:22pt;line-height:1.15;margin:0 32mm 3mm;font-weight:700}.customer{font-size:11pt;line-height:1.4;margin:0 32mm 3mm}.ages{font-size:9pt;line-height:1.6;max-width:210mm;margin:0 auto 3mm;color:#52677e}.details{font-size:8pt;color:#52677e;margin:0}.values-content{margin-top:5mm}.eyebrow{font-size:8pt;font-weight:700;color:#1469cb;margin:0 0 3mm}.comparison{width:100%;border-collapse:collapse;table-layout:fixed;font-size:7.2pt}.comparison th,.comparison td{border:.4pt solid #d8e2ed;padding:2mm 1mm;text-align:center;vertical-align:middle;overflow-wrap:anywhere}.comparison th{text-align:left;font-weight:700}.comparison tr:nth-child(odd){background:#f3f7fb}.comparison .logos{background:white}.plan-logo{display:block;margin:auto;width:18mm;height:8mm;object-fit:contain}.comparison .total th,.comparison .total td{background:#1469cb;color:white;font-weight:700}.total td{white-space:nowrap}.disclaimer{font-size:7.5pt;line-height:1.4;color:#52677e;text-align:center;margin:5mm 0 3mm}.pdf-contact{break-before:avoid;page-break-before:avoid;text-align:center;font-size:8pt;line-height:1.4;font-weight:700;margin:0}.network-page{display:block}.network-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:repeat(3,minmax(40mm,auto));grid-auto-flow:column;gap:4mm 6mm;margin-top:5mm;align-items:stretch}.operator-card{border:.5pt solid #d8e2ed;border-radius:3mm;background:#f3f7fb;padding:3mm;min-height:40mm;break-inside:avoid}.operator-heading{display:flex;align-items:center;gap:5mm;border-bottom:.5pt solid #d8e2ed;padding-bottom:2mm;margin-bottom:2mm}.operator-logo{width:18mm;height:8mm;object-fit:contain;object-position:left center}.operator-heading h2{font-size:11pt;margin:0}.network-plan{break-inside:avoid;padding:1mm 0 2mm}.network-plan+.network-plan{border-top:.5pt solid #d8e2ed}.network-plan h3{font-size:9pt;margin:0 0 2mm}.network-plan p{font-size:7.2pt;line-height:1.5;margin:0;overflow-wrap:anywhere}.blank-hospitals{display:flex;gap:3mm;color:#52677e}.blank-hospitals span{flex:1;border-bottom:.5pt solid #d8e2ed}.network-page .pdf-header{padding-bottom:3mm}.network-page .customer{margin-bottom:0}.company-info{font-size:7pt;margin:2mm 0 0}.network-plan .plan-notes{margin-top:2mm;font-size:7.2pt;color:#385775}tr{break-inside:avoid}
 </style></head><body>${valuePages.join("")}${networkPages.join("")}</body></html>`;
 }
 
