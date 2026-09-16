@@ -3,6 +3,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase";
 import { buildQuotePdf, printQuoteDocument } from "@/lib/quote-pdf";
+import { discountFor, discountedPrice, ruleDescription, totalsWithIof } from "@/lib/plan-rules";
+import { Company } from "@/lib/company";
 import { cleanQuoteTitle, firstRelation } from "@/lib/quote-title";
 
 type Quote = { id: string; quote_number: number | null; title: string | null; created_at: string; contracting_mode?: string };
@@ -13,6 +15,7 @@ type Plan = {
   copay_description: string | null;
   logo_url: string | null;
   main_hospitals: string | null;
+  observations?: string | null; iof_percent?: number | null; discount_percent?: number | null; discount_min_lives?: number | null;
   insurer: { trade_name: string | null; legal_name: string | null; logo_url: string | null } | null;
 };
 type PricingRule = {
@@ -81,7 +84,7 @@ export default function QuoteResultPage() {
           .order("created_at", { ascending: false }),
         supabase
           .from("insurer_plans")
-          .select("id, name, accommodation, copay_description, logo_url, main_hospitals, insurer:insurers(trade_name, legal_name, logo_url)")
+          .select("id, name, accommodation, copay_description, logo_url, main_hospitals, observations, discount_percent, discount_min_lives, iof_percent, insurer:insurers(trade_name, legal_name, logo_url)")
           .eq("active", true)
           .order("name"),
         supabase.from("pricing_tables").select("plan_id, contracting_mode").eq("is_active", true).is("archived_at", null),
@@ -140,10 +143,10 @@ export default function QuoteResultPage() {
   }
 
   function totalsForPlan(planId: string) {
-    return {
-      ward: results.reduce((total, row) => total + (row.prices[planId]?.ward ?? 0), 0),
-      apartment: results.reduce((total, row) => total + (row.prices[planId]?.apartment ?? 0), 0),
-    };
+    const plan = selectedPlans.find(item => item.id === planId) ?? {};
+    const ward = totalsWithIof(results.reduce((sum,row) => sum + (row.prices[planId]?.ward ?? 0), 0), plan, selectedMode === "corporate");
+    const apartment = totalsWithIof(results.reduce((sum,row) => sum + (row.prices[planId]?.apartment ?? 0), 0), plan, selectedMode === "corporate");
+    return { ward: ward.total, apartment: apartment.total, wardSubtotal: ward.subtotal, apartmentSubtotal: apartment.subtotal, wardIof: ward.iof, apartmentIof: apartment.iof, iofPercent: ward.percent };
   }
 
   function sendWhatsApp() {
@@ -154,7 +157,7 @@ export default function QuoteResultPage() {
       ...visiblePlans.flatMap(({ plan, showWard, showApartment }) => {
         const total = totalsForPlan(plan.id);
         const insurer = plan.insurer?.trade_name || plan.insurer?.legal_name || "Operadora";
-        return [`*${insurer} — ${plan.name}*`, ...(showWard ? [`Enfermaria: ${currency.format(total.ward)}`] : []), ...(showApartment ? [`Apartamento: ${currency.format(total.apartment)}`] : []), ""];
+        return [`*${insurer} — ${plan.name}*`, ...(showWard ? [`Enfermaria: ${currency.format(total.ward)}`] : []), ...(showApartment ? [`Apartamento: ${currency.format(total.apartment)}`] : []), ...(total.iofPercent > 0 ? [`IOF ${total.iofPercent}% incluído: ${showWard ? "Enfermaria " + currency.format(total.wardIof) : ""}${showWard && showApartment ? " / " : ""}${showApartment ? "Apartamento " + currency.format(total.apartmentIof) : ""}`] : []), ...(plan.observations ? [plan.observations] : []), ...(ruleDescription(plan) ? [ruleDescription(plan), discountFor(plan, results.reduce((n,row) => n + row.lives, 0)) > 0 ? "Desconto já aplicado." : "Mínimo não atingido."] : []), ""];
       }),
     ].join("\n");
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank", "noopener,noreferrer");
@@ -170,7 +173,7 @@ export default function QuoteResultPage() {
       const client = supabaseBrowser();
       const [membershipResponse, quoteResponse] = await Promise.all([
         client.from("organization_members").select("organization_id").limit(1).single(),
-        client.from("quotes").select("contracting_mode,lead:crm_leads!quotes_lead_id_fkey(primary_contact:crm_contacts!crm_leads_primary_contact_id_fkey(full_name,phone))").eq("id", quoteId).single(),
+        client.from("quotes").select("contracting_mode,company_data,lead:crm_leads!quotes_lead_id_fkey(primary_contact:crm_contacts!crm_leads_primary_contact_id_fkey(full_name,phone))").eq("id", quoteId).single(),
       ]);
       if (quoteResponse.error) throw new Error(quoteResponse.error.message);
       const organization = membershipResponse.data?.organization_id
@@ -178,14 +181,14 @@ export default function QuoteResultPage() {
         : null;
       type Contact = { full_name?: string; phone?: string };
       type Lead = { primary_contact?: Contact | Contact[] | null };
-      const details = quoteResponse.data as unknown as { contracting_mode?: string; lead?: Lead | Lead[] | null };
+      const details = quoteResponse.data as unknown as { contracting_mode?: string; company_data?: Company | null; lead?: Lead | Lead[] | null };
       const contact = firstRelation(firstRelation(details.lead)?.primary_contact);
       const html = buildQuotePdf({
         clientName: contact?.full_name || quote.title || "Cliente não informado",
         whatsapp: contact?.phone || "Não informado",
         code: quoteCode(quote), mode: modeLabel[selectedMode] || "Não informada",
         brokerLogo: organization?.logo_url || document.querySelector("[data-org-logo]")?.getAttribute("src") || "/mais-corretora-logo.png",
-        options: visiblePlans, rows: results,
+        options: visiblePlans, rows: results, isCorporate: selectedMode === "corporate", company: details.company_data,
       });
       setPdfHtml(html);
     } catch (error) {
@@ -232,9 +235,10 @@ export default function QuoteResultPage() {
       selectedPlanIds.forEach((planId) => {
         const planTableIds = (tables ?? []).filter((table) => table.plan_id === planId).map((table) => table.id);
         const rule = ((rules ?? []) as PricingRule[]).find((item) => planTableIds.includes(item.pricing_table_id) && age >= item.age_from && (item.age_to === null || age <= item.age_to));
+        const percent = discountFor(selectedPlans.find(plan => plan.id === planId) ?? {}, members.length);
         prices[planId] = {
-          ward: rule?.ward_monthly_price === null || rule?.ward_monthly_price === undefined ? null : Number(rule.ward_monthly_price),
-          apartment: rule?.apartment_monthly_price === null || rule?.apartment_monthly_price === undefined ? null : Number(rule.apartment_monthly_price),
+          ward: rule?.ward_monthly_price === null || rule?.ward_monthly_price === undefined ? null : discountedPrice(Number(rule.ward_monthly_price), percent),
+          apartment: rule?.apartment_monthly_price === null || rule?.apartment_monthly_price === undefined ? null : discountedPrice(Number(rule.apartment_monthly_price), percent),
         };
       });
       return { age, prices };
@@ -283,25 +287,20 @@ export default function QuoteResultPage() {
           </select>
         </label>
         <p style={{ color: "#52636e", marginTop: 0 }}>Selecione os planos que deseja comparar. {selectedPlanIds.length} selecionado(s).</p>
-        {loading ? <p>Carregando planos...</p> : plansByInsurer.map(([insurer, insurerPlans]) => (
-          <section key={insurer} style={{ marginBottom: 16 }}>
-            <h3 style={{ fontSize: 15, color: "#244766", marginBottom: 8 }}>{insurer}</h3>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 170px), 1fr))", gap: 8 }}>
+        <div className="plan-picker-scroll">{loading ? <p>Carregando planos...</p> : plansByInsurer.map(([insurer, insurerPlans]) => (
+          <section key={insurer} className="plan-picker-group">
+            <h3>{insurerPlans[0]?.insurer?.logo_url && <img src={insurerPlans[0].insurer.logo_url} alt="" style={{ width: 48, height: 20, objectFit: "contain", objectPosition: "left" }} />}{insurer}</h3>
+            <div className="plan-picker-grid">
               {insurerPlans.map(plan => {
                 const selected = selectedPlanIds.includes(plan.id);
-                return <label key={plan.id} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: 10, border: `2px solid ${selected ? "#1769c2" : "#dce4e8"}`, borderRadius: 9, background: selected ? "#edf5ff" : "#fff", cursor: "pointer" }}>
-                  <input type="checkbox" checked={selected} onChange={() => togglePlan(plan.id)} style={{ width: 18, height: 18, accentColor: "#1769c2", flexShrink: 0 }} />
-                  <span style={{ display: "grid", gap: 4 }}>
-                    {(plan.logo_url || plan.insurer?.logo_url) && <img src={plan.logo_url || plan.insurer?.logo_url || ""} alt="" style={{ width: 65, height: 22, objectFit: "contain", objectPosition: "left" }} />}
-                    <strong style={{ fontSize: 15, color: "#142b48" }}>{plan.name}</strong>
-                    {plan.accommodation && <span style={{ color: "#52636e", fontSize: 13 }}>{plan.accommodation}</span>}
-                    <span style={{ color: "#52636e", fontSize: 12 }}>{copayLabel(plan.copay_description)}</span>
-                  </span>
+                return <label key={plan.id} className={`plan-choice${selected ? " is-selected" : ""}`}>
+                  <input type="checkbox" checked={selected} onChange={() => togglePlan(plan.id)} />
+                  <span className="plan-choice-info"><strong>{plan.name}</strong><small>{copayLabel(plan.copay_description)}</small>{ruleDescription(plan) && <small className="plan-rule">{ruleDescription(plan)}</small>}</span>
                 </label>;
               })}
             </div>
           </section>
-        ))}
+        ))}</div>
         {!loading && !availablePlans.length && <p>Nenhum plano com tabela ativa para {modeLabel[selectedMode]}. Verifique a modalidade cadastrada nas tabelas de preço.</p>}
 
         <button onClick={() => void generateValues()} style={{ marginTop: 20, border: 0, borderRadius: 8, background: "#1769c2", color: "white", padding: "14px 20px", fontSize: 16, fontWeight: 800, cursor: "pointer" }}>Gerar valores</button>
@@ -321,13 +320,15 @@ export default function QuoteResultPage() {
               </thead>
               <tbody>
                 {results.map((row, rowIndex) => <tr key={`${row.label}-${rowIndex}`} style={{ borderTop: "1px solid #e4eaed" }}><td style={{ padding: 10, fontWeight: 700 }}>{row.label}</td><td style={{ padding: 10, textAlign: "center" }}>{row.lives}</td>{visiblePlans.map(({ plan, showWard, showApartment }) => <Fragment key={plan.id}>{showWard && <td style={{ padding: 10, textAlign: "right", borderLeft: "1px solid #eef1f4" }}>{currency.format(row.prices[plan.id]?.ward ?? 0)}</td>}{showApartment && <td style={{ padding: 10, textAlign: "right" }}>{currency.format(row.prices[plan.id]?.apartment ?? 0)}</td>}</Fragment>)}</tr>)}
+                {selectedMode === "corporate" && <tr style={{ borderTop: "1px solid #dce4e8", background: "#f9fbff" }}><td colSpan={2} style={{ padding: 10 }}>IOF (acréscimo)</td>{visiblePlans.map(({plan,showWard,showApartment}) => { const total = totalsForPlan(plan.id); return <Fragment key={plan.id}>{showWard && <td style={{ padding: 10, textAlign: "right" }}>{total.iofPercent}% · {currency.format(total.wardIof)}</td>}{showApartment && <td style={{ padding: 10, textAlign: "right" }}>{total.iofPercent}% · {currency.format(total.apartmentIof)}</td>}</Fragment>; })}</tr>}
                 <tr style={{ borderTop: "2px solid #7ba7e4", background: "#f4f8ff", fontWeight: 800 }}><td colSpan={2} style={{ padding: 10 }}>Total mensal</td>{visiblePlans.map(({ plan, showWard, showApartment }) => { const total = totalsForPlan(plan.id); return <Fragment key={plan.id}>{showWard && <td style={{ padding: 10, textAlign: "right", borderLeft: "1px solid #dce4e8" }}>{currency.format(total.ward)}</td>}{showApartment && <td style={{ padding: 10, textAlign: "right" }}>{currency.format(total.apartment)}</td>}</Fragment>; })}</tr>
               </tbody>
             </table>
           </div>
           <div className="mobile-quote-cards">
-            {visiblePlans.map(({ plan, showWard, showApartment }) => { const total = totalsForPlan(plan.id); return <article key={plan.id} className="mobile-quote-card"><div className="mobile-plan-heading">{plan.logo_url || plan.insurer?.logo_url ? <img className="plan-logo" src={plan.logo_url || plan.insurer?.logo_url || ""} alt={plan.name} /> : null}<b>{plan.name}</b></div>{results.map((row) => <div className="mobile-band-row" key={row.label}><b>{row.label} <span>{row.lives} vida(s)</span></b>{showWard && <span>Enfermaria: {currency.format(row.prices[plan.id]?.ward ?? 0)}</span>}{showApartment && <span>Apartamento: {currency.format(row.prices[plan.id]?.apartment ?? 0)}</span>}</div>)}<div className="mobile-total-row"><b>Total mensal</b>{showWard && <span>Enfermaria: {currency.format(total.ward)}</span>}{showApartment && <span>Apartamento: {currency.format(total.apartment)}</span>}</div></article>; })}
+            {visiblePlans.map(({ plan, showWard, showApartment }) => { const total = totalsForPlan(plan.id); return <article key={plan.id} className="mobile-quote-card"><div className="mobile-plan-heading">{plan.logo_url || plan.insurer?.logo_url ? <img className="plan-logo" src={plan.logo_url || plan.insurer?.logo_url || ""} alt={plan.name} /> : null}<b>{plan.name}</b></div>{results.map((row) => <div className="mobile-band-row" key={row.label}><b>{row.label} <span>{row.lives} vida(s)</span></b>{showWard && <span>Enfermaria: {currency.format(row.prices[plan.id]?.ward ?? 0)}</span>}{showApartment && <span>Apartamento: {currency.format(row.prices[plan.id]?.apartment ?? 0)}</span>}</div>)}<div className="mobile-total-row">{selectedMode === "corporate" && <><b>IOF {total.iofPercent}% (acréscimo)</b>{showWard && <span>Enfermaria: {currency.format(total.wardIof)}</span>}{showApartment && <span>Apartamento: {currency.format(total.apartmentIof)}</span>}</>}<b>Total mensal{selectedMode === "corporate" ? " com IOF" : ""}</b>{showWard && <span>Enfermaria: {currency.format(total.ward)}</span>}{showApartment && <span>Apartamento: {currency.format(total.apartment)}</span>}</div></article>; })}
           </div>
+          <div style={{ marginTop: 14, fontSize: 13 }}>{visiblePlans.filter(({ plan }) => plan.observations || ruleDescription(plan)).map(({ plan }) => <p key={plan.id}><strong>{plan.name}:</strong> {plan.observations} {ruleDescription(plan)}{discountFor(plan, results.reduce((n,row) => n + row.lives, 0)) > 0 ? " — desconto já aplicado aos valores." : ruleDescription(plan) ? " — mínimo ainda não atingido." : ""}</p>)}</div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 22 }}>
             <a className="secondary" href={`/dashboard/quotes/members?quoteId=${quoteId}`}>Editar cotação</a>
             <button onClick={generatePdfLandscape} disabled={pdfLoading} className="secondary">{pdfLoading ? "Preparando PDF..." : "Gerar PDF"}</button>
